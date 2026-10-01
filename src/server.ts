@@ -3,15 +3,22 @@ import Fastify from 'fastify';
 import { config } from './config.js';
 import { createPools, closePools, getPool } from './db/pools.js';
 import { runMigrations, waitForDb } from './db/migrate.js';
+import { runWithRequestContext } from './http/context.js';
 
 const app = Fastify({ logger: false });
 
 let dbInitialized = false;
 
-// Request ID
+// Request ID with AsyncLocalStorage
 app.addHook('onRequest', async (request, reply) => {
   const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
   reply.header('x-request-id', requestId);
+  
+  const ctx = {
+    requestId,
+    startTime: Date.now(),
+  };
+  runWithRequestContext(ctx, () => {});
 });
 
 // Health endpoints
