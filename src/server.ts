@@ -9,6 +9,7 @@ import { isValidUuid } from './lib/uuid.js';
 import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/errors.js';
 import { authRoutes } from './http/routes/auth.js';
 import { showsRoutes } from './http/routes/shows.js';
+import { reservationsRoutes } from './http/routes/reservations.js';
 import { authHook, adminGuard } from './http/auth.js';
 
 const app = Fastify({ 
@@ -129,6 +130,9 @@ await app.register(authRoutes);
 
 // Shows routes
 await app.register(showsRoutes);
+
+// Reservations routes
+await app.register(reservationsRoutes);
 
 // Health endpoints
 app.get('/health/live', async () => {

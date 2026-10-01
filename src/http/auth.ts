@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { AppError, ERROR_CODES } from './errors.js';
 import { timingSafeEqual } from 'node:crypto';
+import { runWithRequestContext, getRequestContext, setRequestContext } from './context.js';
 
 export interface JwtPayload {
   sub: string;
@@ -28,6 +29,11 @@ export function setAuthContext(requestId: string, ctx: AuthContext): void {
 
 export function clearAuthContext(requestId: string): void {
   authStorage.delete(requestId);
+}
+
+export function getCurrentAuthContext(): AuthContext | undefined {
+  const ctx = getRequestContext();
+  return ctx?.userId ? { userId: ctx.userId, requestId: ctx.requestId } : undefined;
 }
 
 export function verifyToken(token: string): JwtPayload {
@@ -57,6 +63,11 @@ export async function authHook(request: FastifyRequest, reply: FastifyReply): Pr
   const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
   const ctx: AuthContext = { userId, requestId };
   setAuthContext(requestId, ctx);
+  
+  // Also set in AsyncLocalStorage for service layer access
+  // Use setRequestContext (enterWith) to persist for entire async call chain
+  setRequestContext({ ...ctx, startTime: Date.now() });
+  
   (request as any).user = ctx;
 }
 

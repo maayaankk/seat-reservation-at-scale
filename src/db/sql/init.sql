@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   key VARCHAR(255) NOT NULL,
   show_id UUID NOT NULL,
   seats_hash TEXT NOT NULL,
-  reservation_id UUID REFERENCES reservations(id) ON DELETE CASCADE,
+  reservation_id UUID REFERENCES reservations(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   PRIMARY KEY (user_id, key)
 );
 
