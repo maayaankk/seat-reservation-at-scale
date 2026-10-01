@@ -43,6 +43,9 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      - run: npm run migrate
+        env:
+          DATABASE_DIRECT_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
       - run: npm test
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/seat_reservation

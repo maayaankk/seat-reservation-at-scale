@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS seats (
   seat_label VARCHAR(50) NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'available'
      CHECK (status IN ('available','held','confirmed')),
-  reservation_id UUID REFERENCES reservations(id),
+  reservation_id UUID REFERENCES reservations(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   UNIQUE (show_id, seat_label),
   CHECK ((status = 'available') = (reservation_id IS NULL))
 );
