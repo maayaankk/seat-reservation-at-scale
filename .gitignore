@@ -3,3 +3,8 @@ dist
 .env
 *.log
 .DS_Store
+SKILLS.md
+AGENTS.md
+STEPS.md
+TASK.md
+IMPLEMENTATION.md

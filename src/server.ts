@@ -1,7 +1,189 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
+import { config } from './config.js';
+import { createPools, closePools, getPool } from './db/pools.js';
+import { runMigrations, waitForDb } from './db/migrate.js';
+import { runWithRequestContext } from './http/context.js';
+import { logger, getLogger } from './observability/logger.js';
+import { isValidUuid } from './lib/uuid.js';
+import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/errors.js';
 
 const app = Fastify({ logger: false });
 
+let dbInitialized = false;
+
+// Request ID with AsyncLocalStorage + request logging
+app.addHook('onRequest', async (request, reply) => {
+  const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
+  reply.header('x-request-id', requestId);
+  
+  const ctx = {
+    requestId,
+    startTime: Date.now(),
+  };
+  runWithRequestContext(ctx, () => {});
+
+  const log = getLogger();
+  log.info({ method: request.method, url: request.url }, 'request started');
+});
+
+// Response logging
+app.addHook('onResponse', async (request, reply) => {
+  const ctx = { requestId: reply.getHeader('x-request-id') };
+  runWithRequestContext(ctx as any, () => {
+    const log = getLogger();
+    log.info(
+      { method: request.method, url: request.url, statusCode: reply.statusCode, durationMs: reply.elapsedTime },
+      'request completed'
+    );
+  });
+});
+
+// Error logging
+app.addHook('onError', async (request, reply, error) => {
+  const ctx = { requestId: reply.getHeader('x-request-id') };
+  runWithRequestContext(ctx as any, () => {
+    const log = getLogger();
+    log.error({ err: error, method: request.method, url: request.url }, 'request error');
+  });
+});
+
+// Request ID with AsyncLocalStorage
+app.addHook('onRequest', async (request, reply) => {
+  const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
+  reply.header('x-request-id', requestId);
+  
+  const ctx = {
+    requestId,
+    startTime: Date.now(),
+  };
+  runWithRequestContext(ctx, () => {});
+});
+
+// UUID path validation - catch invalid UUID params before route handlers
+app.addHook('preHandler', async (request, reply) => {
+  const params = request.params as Record<string, string>;
+  for (const [key, value] of Object.entries(params)) {
+    if (key.endsWith('Id') || key === 'id') {
+      const val = value;
+      if (val && !isValidUuid(val)) {
+        reply.code(404).send({ error: 'NotFound', message: 'Not found', code: 'NOT_FOUND' });
+        return reply;
+      }
+    }
+  }
+});
+
+// Not found handler for unknown routes
+app.setNotFoundHandler(async (request, reply) => {
+  reply.code(404).send({ error: 'NotFound', message: 'Not found', code: 'NOT_FOUND' });
+});
+
+// Global error handler - unified error format
+app.setErrorHandler(async (error, request, reply) => {
+  const requestId = (reply.getHeader('x-request-id') as string) || crypto.randomUUID();
+  reply.header('x-request-id', requestId);
+
+  // Fastify validation errors
+  if (error.validation) {
+    reply.code(400).send(createErrorResponse(
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: error.validation })
+    ));
+    return;
+  }
+
+  // Zod validation errors
+  if (error.name === 'ZodError') {
+    const zodError = error as any;
+    reply.code(400).send(createErrorResponse(
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Invalid request body', { issues: zodError.errors })
+    ));
+    return;
+  }
+
+  // SyntaxError (invalid JSON)
+  if (error instanceof SyntaxError && 'statusCode' in error && error.statusCode === 400) {
+    reply.code(400).send(createErrorResponse(
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Invalid JSON')
+    ));
+    return;
+  }
+
+  // AppError (our custom errors)
+  if (isAppError(error)) {
+    reply.code(error.statusCode).send(createErrorResponse(error));
+    return;
+  }
+
+  // JWT errors
+  if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+    reply.code(401).send(createErrorResponse(
+      new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Invalid or expired token')
+    ));
+    return;
+  }
+
+  // Unknown errors
+  logger.error({ err: error, requestId, url: request.url }, 'Unhandled error');
+  reply.code(500).send(createErrorResponse(
+    new AppError(500, ERROR_CODES.INTERNAL, 'Internal server error')
+  ));
+});
+
+// Health endpoints
+app.get('/health/live', async () => {
+  return { status: 'ok' };
+});
+
+app.get('/health/ready', async (request, reply) => {
+  if (!dbInitialized) {
+    reply.code(503).send({ status: 'not ready', reason: 'db not initialized' });
+    return;
+  }
+  try {
+    const pool = getPool('ops');
+    const client = await pool.connect();
+    try {
+      await client.query('SELECT 1');
+      reply.send({ status: 'ready' });
+    } finally {
+      client.release();
+    }
+  } catch {
+    reply.code(503).send({ status: 'not ready', reason: 'db unavailable' });
+  }
+});
+
+// DB test endpoint (for manual verification)
+app.get('/health/db-test', async (request, reply) => {
+  if (!dbInitialized) {
+    reply.code(503).send({ status: 'not ready', reason: 'db not initialized' });
+    return;
+  }
+  try {
+    const pool = getPool('read');
+    const client = await pool.connect();
+    try {
+      const result = await client.query('SELECT NOW() as time, version() as version');
+      const tables = await client.query(`
+        SELECT table_name FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      `);
+      reply.send({
+        status: 'ok',
+        db_time: result.rows[0].time,
+        pg_version: result.rows[0].version,
+        tables: tables.rows.map(r => r.table_name)
+      });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    reply.code(500).send({ status: 'error', error: err instanceof Error ? err.message : 'Unknown' });
+  }
+});
+
+// Original hello world
 app.get('/health', async () => {
   return { status: 'ok', message: 'Hello World' };
 });
@@ -12,10 +194,33 @@ app.get('/', async () => {
 
 async function main() {
   try {
-    await app.listen({ port: 8080, host: '0.0.0.0' });
-    console.log('Server started on http://localhost:8080');
+    // Initialize DB pools
+    createPools();
+
+    // Wait for DB and run migrations
+    await waitForDb();
+    await runMigrations();
+    dbInitialized = true;
+    logger.info('Database initialized successfully');
+
+    // Graceful shutdown
+    let isShuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      logger.info({ signal }, 'Shutting down...');
+      await closePools();
+      await app.close();
+      process.exit(0);
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
+    await app.listen({ port: config.PORT, host: config.HOST, backlog: 8192 });
+    logger.info({ port: config.PORT, host: config.HOST }, 'Server started');
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, 'Failed to start server');
     process.exit(1);
   }
 }
