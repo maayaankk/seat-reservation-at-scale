@@ -5,6 +5,7 @@ import { createPools, closePools, getPool } from './db/pools.js';
 import { runMigrations, waitForDb } from './db/migrate.js';
 import { runWithRequestContext } from './http/context.js';
 import { logger, getLogger } from './observability/logger.js';
+import { isValidUuid } from './lib/uuid.js';
 
 const app = Fastify({ logger: false });
 
@@ -56,6 +57,25 @@ app.addHook('onRequest', async (request, reply) => {
     startTime: Date.now(),
   };
   runWithRequestContext(ctx, () => {});
+});
+
+// UUID path validation - catch invalid UUID params before route handlers
+app.addHook('preHandler', async (request, reply) => {
+  const params = request.params as Record<string, string>;
+  for (const [key, value] of Object.entries(params)) {
+    if (key.endsWith('Id') || key === 'id') {
+      const val = value;
+      if (val && !isValidUuid(val)) {
+        reply.code(404).send({ error: 'NotFound', message: 'Not found', code: 'NOT_FOUND' });
+        return reply;
+      }
+    }
+  }
+});
+
+// Not found handler for unknown routes
+app.setNotFoundHandler(async (request, reply) => {
+  reply.code(404).send({ error: 'NotFound', message: 'Not found', code: 'NOT_FOUND' });
 });
 
 // Health endpoints
