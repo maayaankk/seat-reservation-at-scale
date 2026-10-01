@@ -8,7 +8,7 @@ import { logger, getLogger } from './observability/logger.js';
 import { isValidUuid } from './lib/uuid.js';
 import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/errors.js';
 import { authRoutes } from './http/routes/auth.js';
-import { authHook } from './http/auth.js';
+import { authHook, adminGuard } from './http/auth.js';
 
 const app = Fastify({ logger: false });
 
@@ -186,6 +186,11 @@ app.get('/health/db-test', { preHandler: authHook }, async (request, reply) => {
   } catch (err) {
     reply.code(500).send({ status: 'error', error: err instanceof Error ? err.message : 'Unknown' });
   }
+});
+
+// Admin guard test endpoint (for testing)
+app.get('/admin/test', { preHandler: adminGuard }, async () => {
+  return { status: 'ok', message: 'Admin access granted' };
 });
 
 // Original hello world
