@@ -7,6 +7,8 @@ import { runWithRequestContext } from './http/context.js';
 import { logger, getLogger } from './observability/logger.js';
 import { isValidUuid } from './lib/uuid.js';
 import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/errors.js';
+import { authRoutes } from './http/routes/auth.js';
+import { authHook } from './http/auth.js';
 
 const app = Fastify({ logger: false });
 
@@ -130,6 +132,9 @@ app.setErrorHandler(async (error, request, reply) => {
   ));
 });
 
+// Auth routes
+await app.register(authRoutes);
+
 // Health endpoints
 app.get('/health/live', async () => {
   return { status: 'ok' };
@@ -155,7 +160,7 @@ app.get('/health/ready', async (request, reply) => {
 });
 
 // DB test endpoint (for manual verification)
-app.get('/health/db-test', async (request, reply) => {
+app.get('/health/db-test', { preHandler: authHook }, async (request, reply) => {
   if (!dbInitialized) {
     reply.code(503).send({ status: 'not ready', reason: 'db not initialized' });
     return;
