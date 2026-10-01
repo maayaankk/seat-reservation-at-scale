@@ -4,10 +4,47 @@ import { config } from './config.js';
 import { createPools, closePools, getPool } from './db/pools.js';
 import { runMigrations, waitForDb } from './db/migrate.js';
 import { runWithRequestContext } from './http/context.js';
+import { logger, getLogger } from './observability/logger.js';
 
 const app = Fastify({ logger: false });
 
 let dbInitialized = false;
+
+// Request ID with AsyncLocalStorage + request logging
+app.addHook('onRequest', async (request, reply) => {
+  const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
+  reply.header('x-request-id', requestId);
+  
+  const ctx = {
+    requestId,
+    startTime: Date.now(),
+  };
+  runWithRequestContext(ctx, () => {});
+
+  const log = getLogger();
+  log.info({ method: request.method, url: request.url }, 'request started');
+});
+
+// Response logging
+app.addHook('onResponse', async (request, reply) => {
+  const ctx = { requestId: reply.getHeader('x-request-id') };
+  runWithRequestContext(ctx as any, () => {
+    const log = getLogger();
+    log.info(
+      { method: request.method, url: request.url, statusCode: reply.statusCode, durationMs: reply.elapsedTime },
+      'request completed'
+    );
+  });
+});
+
+// Error logging
+app.addHook('onError', async (request, reply, error) => {
+  const ctx = { requestId: reply.getHeader('x-request-id') };
+  runWithRequestContext(ctx as any, () => {
+    const log = getLogger();
+    log.error({ err: error, method: request.method, url: request.url }, 'request error');
+  });
+});
 
 // Request ID with AsyncLocalStorage
 app.addHook('onRequest', async (request, reply) => {
@@ -55,9 +92,7 @@ app.get('/health/db-test', async (request, reply) => {
     const pool = getPool('read');
     const client = await pool.connect();
     try {
-      // Test basic query
       const result = await client.query('SELECT NOW() as time, version() as version');
-      // Test table exists
       const tables = await client.query(`
         SELECT table_name FROM information_schema.tables 
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
@@ -94,14 +129,14 @@ async function main() {
     await waitForDb();
     await runMigrations();
     dbInitialized = true;
-    console.log('Database initialized successfully');
+    logger.info('Database initialized successfully');
 
     // Graceful shutdown
     let isShuttingDown = false;
     const shutdown = async (signal: string) => {
       if (isShuttingDown) return;
       isShuttingDown = true;
-      console.log(`Shutting down (${signal})...`);
+      logger.info({ signal }, 'Shutting down...');
       await closePools();
       await app.close();
       process.exit(0);
@@ -111,11 +146,11 @@ async function main() {
     process.on('SIGINT', () => shutdown('SIGINT'));
 
     await app.listen({ port: config.PORT, host: config.HOST, backlog: 8192 });
-    console.log(`Server started on http://${config.HOST}:${config.PORT}`);
+    logger.info({ port: config.PORT, host: config.HOST }, 'Server started');
   } catch (err) {
-    console.error('Failed to start server:', err);
+    logger.error({ err }, 'Failed to start server');
     process.exit(1);
   }
 }
 
-main(); 
+main();
