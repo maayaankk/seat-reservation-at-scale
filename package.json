@@ -1,0 +1,21 @@
+{
+  "name": "seat-reservation",
+  "version": "0.1.0",
+  "description": "Seat reservation API",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node src/server.ts"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.4",
+    "tsx": "^4.16.2"
+  }
+}
