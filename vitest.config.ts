@@ -10,6 +10,7 @@ export default defineConfig({
     poolOptions: {
       threads: { singleThread: true },
     },
+    setupFiles: ['test/setup.ts'],
     env: {
       NODE_ENV: 'test',
       JWT_SECRET: 'test-secret-change-in-production-min-32-chars-long',

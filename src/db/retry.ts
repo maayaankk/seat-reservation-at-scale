@@ -77,3 +77,37 @@ export async function withRetry<T>(
   }
   throw lastErr!;
 }
+
+export async function withTransactionRetry<T>(
+  poolName: 'write' | 'read' | 'ops',
+  fn: (client: PoolClient) => Promise<T>,
+  onRetry?: (attempt: number, err: Error, reason: RetryReason) => void
+): Promise<T> {
+  let lastErr: Error;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const pool = getPool(poolName);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      lastErr = err as Error;
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+      if (attempt === MAX_RETRIES || !isRetryableError(err)) {
+        throw err;
+      }
+      const reason = classifyRetryReason(err);
+      onRetry?.(attempt + 1, err, reason);
+      await new Promise((r) => setTimeout(r, jitteredDelay(attempt)));
+    } finally {
+      client.release(true);
+    }
+  }
+  throw lastErr!;
+}
