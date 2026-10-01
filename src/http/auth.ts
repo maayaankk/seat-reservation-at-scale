@@ -60,7 +60,7 @@ export async function authHook(request: FastifyRequest, reply: FastifyReply): Pr
   (request as any).user = ctx;
 }
 
-export function adminGuard(request: FastifyRequest, reply: FastifyReply): void {
+export async function adminGuard(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const adminToken = request.headers['x-admin-token'] as string;
   if (!adminToken) {
     throw new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Missing X-Admin-Token header');
@@ -70,6 +70,7 @@ export function adminGuard(request: FastifyRequest, reply: FastifyReply): void {
   if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
     throw new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Invalid admin token');
   }
+  return;
 }
 
 export function createDevToken(userId: string): string {

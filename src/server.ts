@@ -8,9 +8,13 @@ import { logger, getLogger } from './observability/logger.js';
 import { isValidUuid } from './lib/uuid.js';
 import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/errors.js';
 import { authRoutes } from './http/routes/auth.js';
+import { showsRoutes } from './http/routes/shows.js';
 import { authHook, adminGuard } from './http/auth.js';
 
-const app = Fastify({ logger: false });
+const app = Fastify({ 
+  logger: false,
+  bodyLimit: 1048576 // 1MB
+});
 
 let dbInitialized = false;
 
@@ -48,18 +52,6 @@ app.addHook('onError', async (request, reply, error) => {
     const log = getLogger();
     log.error({ err: error, method: request.method, url: request.url }, 'request error');
   });
-});
-
-// Request ID with AsyncLocalStorage
-app.addHook('onRequest', async (request, reply) => {
-  const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
-  reply.header('x-request-id', requestId);
-  
-  const ctx = {
-    requestId,
-    startTime: Date.now(),
-  };
-  runWithRequestContext(ctx, () => {});
 });
 
 // UUID path validation - catch invalid UUID params before route handlers
@@ -134,6 +126,9 @@ app.setErrorHandler(async (error, request, reply) => {
 
 // Auth routes
 await app.register(authRoutes);
+
+// Shows routes
+await app.register(showsRoutes);
 
 // Health endpoints
 app.get('/health/live', async () => {
