@@ -6,6 +6,7 @@ import { runMigrations, waitForDb } from './db/migrate.js';
 import { runWithRequestContext } from './http/context.js';
 import { logger, getLogger } from './observability/logger.js';
 import { isValidUuid } from './lib/uuid.js';
+import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/errors.js';
 
 const app = Fastify({ logger: false });
 
@@ -76,6 +77,57 @@ app.addHook('preHandler', async (request, reply) => {
 // Not found handler for unknown routes
 app.setNotFoundHandler(async (request, reply) => {
   reply.code(404).send({ error: 'NotFound', message: 'Not found', code: 'NOT_FOUND' });
+});
+
+// Global error handler - unified error format
+app.setErrorHandler(async (error, request, reply) => {
+  const requestId = (reply.getHeader('x-request-id') as string) || crypto.randomUUID();
+  reply.header('x-request-id', requestId);
+
+  // Fastify validation errors
+  if (error.validation) {
+    reply.code(400).send(createErrorResponse(
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: error.validation })
+    ));
+    return;
+  }
+
+  // Zod validation errors
+  if (error.name === 'ZodError') {
+    const zodError = error as any;
+    reply.code(400).send(createErrorResponse(
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Invalid request body', { issues: zodError.errors })
+    ));
+    return;
+  }
+
+  // SyntaxError (invalid JSON)
+  if (error instanceof SyntaxError && 'statusCode' in error && error.statusCode === 400) {
+    reply.code(400).send(createErrorResponse(
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Invalid JSON')
+    ));
+    return;
+  }
+
+  // AppError (our custom errors)
+  if (isAppError(error)) {
+    reply.code(error.statusCode).send(createErrorResponse(error));
+    return;
+  }
+
+  // JWT errors
+  if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+    reply.code(401).send(createErrorResponse(
+      new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Invalid or expired token')
+    ));
+    return;
+  }
+
+  // Unknown errors
+  logger.error({ err: error, requestId, url: request.url }, 'Unhandled error');
+  reply.code(500).send(createErrorResponse(
+    new AppError(500, ERROR_CODES.INTERNAL, 'Internal server error')
+  ));
 });
 
 // Health endpoints
