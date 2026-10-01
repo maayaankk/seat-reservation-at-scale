@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=development
+      - PORT=8080
+      - HOST=0.0.0.0
+      - JWT_SECRET=dev-secret-change-in-production-min-32-chars-long
+      - JWT_EXPIRES_IN=24h
+      - ADMIN_TOKEN=dev-admin-token-change-in-production
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/seat_reservation
+      - DATABASE_DIRECT_URL=postgres://postgres:postgres@db:5432/seat_reservation
+      - ENABLE_DEV_AUTH=true
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src:ro
+      - ./package.json:/app/package.json:ro
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=seat_reservation
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

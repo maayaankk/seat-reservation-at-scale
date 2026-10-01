@@ -1,7 +1,75 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
+import { config } from './config.js';
+import { createPools, closePools, getPool } from './db/pools.js';
+import { runMigrations, waitForDb } from './db/migrate.js';
 
 const app = Fastify({ logger: false });
 
+let dbInitialized = false;
+
+// Request ID
+app.addHook('onRequest', async (request, reply) => {
+  const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
+  reply.header('x-request-id', requestId);
+});
+
+// Health endpoints
+app.get('/health/live', async () => {
+  return { status: 'ok' };
+});
+
+app.get('/health/ready', async (request, reply) => {
+  if (!dbInitialized) {
+    reply.code(503).send({ status: 'not ready', reason: 'db not initialized' });
+    return;
+  }
+  try {
+    const pool = getPool('ops');
+    const client = await pool.connect();
+    try {
+      await client.query('SELECT 1');
+      reply.send({ status: 'ready' });
+    } finally {
+      client.release();
+    }
+  } catch {
+    reply.code(503).send({ status: 'not ready', reason: 'db unavailable' });
+  }
+});
+
+// DB test endpoint (for manual verification)
+app.get('/health/db-test', async (request, reply) => {
+  if (!dbInitialized) {
+    reply.code(503).send({ status: 'not ready', reason: 'db not initialized' });
+    return;
+  }
+  try {
+    const pool = getPool('read');
+    const client = await pool.connect();
+    try {
+      // Test basic query
+      const result = await client.query('SELECT NOW() as time, version() as version');
+      // Test table exists
+      const tables = await client.query(`
+        SELECT table_name FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      `);
+      reply.send({
+        status: 'ok',
+        db_time: result.rows[0].time,
+        pg_version: result.rows[0].version,
+        tables: tables.rows.map(r => r.table_name)
+      });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    reply.code(500).send({ status: 'error', error: err instanceof Error ? err.message : 'Unknown' });
+  }
+});
+
+// Original hello world
 app.get('/health', async () => {
   return { status: 'ok', message: 'Hello World' };
 });
@@ -12,12 +80,35 @@ app.get('/', async () => {
 
 async function main() {
   try {
-    await app.listen({ port: 8080, host: '0.0.0.0' });
-    console.log('Server started on http://localhost:8080');
+    // Initialize DB pools
+    createPools();
+
+    // Wait for DB and run migrations
+    await waitForDb();
+    await runMigrations();
+    dbInitialized = true;
+    console.log('Database initialized successfully');
+
+    // Graceful shutdown
+    let isShuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      console.log(`Shutting down (${signal})...`);
+      await closePools();
+      await app.close();
+      process.exit(0);
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
+    await app.listen({ port: config.PORT, host: config.HOST, backlog: 8192 });
+    console.log(`Server started on http://${config.HOST}:${config.PORT}`);
   } catch (err) {
-    console.error(err);
+    console.error('Failed to start server:', err);
     process.exit(1);
   }
 }
 
-main();
+main(); 
