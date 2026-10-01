@@ -10,6 +10,7 @@ export default defineConfig({
     poolOptions: {
       threads: { singleThread: true },
     },
+    globalSetup: ['./test/global-setup.ts'],
     setupFiles: ['test/setup.ts'],
     env: {
       NODE_ENV: 'test',
