@@ -20,5 +20,10 @@ export default defineConfig({
       DATABASE_DIRECT_URL: 'postgres://postgres:postgres@localhost:5432/seat_reservation',
       ENABLE_DEV_AUTH: 'true',
     },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+      exclude: ['test/**', 'src/server.ts', 'dist/**', 'node_modules/**'],
+    },
   },
 });
