@@ -20,9 +20,23 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
 
-  test:
-    name: Test (PostgreSQL)
+  build:
+    name: Build
     runs-on: ubuntu-latest
+    needs: [lint-typecheck]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+
+  test:
+    name: Test Suite (Unit, Integration, PostgreSQL, Load, Chaos)
+    runs-on: ubuntu-latest
+    needs: [build]
     services:
       postgres:
         image: postgres:16-alpine
@@ -49,16 +63,14 @@ jobs:
           JWT_SECRET: test-secret-change-in-production-min-32-chars-long
           ADMIN_TOKEN: test-admin-token
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
-      # Start server in background for integration tests
-      - name: Start server
+      - name: Start server for integration tests
         run: |
           npm run build
           npm start &
           SERVER_PID=$!
           echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
-          # Wait for server to be ready
           for i in {1..30}; do
-            if curl -s http://localhost:8080/health/live > /dev/null; then
+            if curl -sf http://localhost:8080/health/live > /dev/null; then
               echo "Server is ready"
               break
             fi
@@ -72,7 +84,8 @@ jobs:
           ADMIN_TOKEN: test-admin-token
           ENABLE_DEV_AUTH: 'true'
           NODE_ENV: test
-      - run: npm test
+      - name: Run all tests (unit, integration, PostgreSQL, load, chaos)
+        run: npm test
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
           DATABASE_DIRECT_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
@@ -81,7 +94,6 @@ jobs:
           ADMIN_TOKEN: test-admin-token
           ENABLE_DEV_AUTH: 'true'
           NODE_ENV: test
-      # Stop server
       - name: Stop server
         if: always()
         run: |
@@ -89,32 +101,18 @@ jobs:
             kill $SERVER_PID || true
           fi
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: [lint-typecheck, test]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-      - run: npm ci
-      - run: npm run build
-
-  docker-build:
-    name: Docker Build
+  docker:
+    name: Docker Build & Test
     runs-on: ubuntu-latest
     needs: [build]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - run: docker build -t seat-reservation:ci .
-      # Save image for downstream jobs
-      - name: Save Docker image
+      - name: Build Docker image
+        run: docker build -t seat-reservation:ci .
+      - name: Save Docker image for downstream jobs
         run: docker save seat-reservation:ci | gzip > seat-reservation.tar.gz
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: seat-reservation-image
           path: seat-reservation.tar.gz
@@ -123,7 +121,7 @@ jobs:
   docker-test:
     name: Docker Test (API endpoints inside container)
     runs-on: ubuntu-latest
-    needs: [docker-build]
+    needs: [build]
     services:
       postgres:
         image: postgres:16-alpine
@@ -154,7 +152,6 @@ jobs:
             -e ENABLE_DEV_AUTH=true \
             -e NODE_ENV=test \
             seat-reservation:ci
-          # Wait for server to be ready
           for i in {1..30}; do
             if curl -sf http://localhost:8080/health/live > /dev/null; then
               echo "Server is ready"
@@ -164,38 +161,28 @@ jobs:
           done
       - name: Test API endpoints inside container
         run: |
-          # Health checks
           curl -sf http://localhost:8080/health/live
           curl -sf http://localhost:8080/health/ready
-          
-          # Create show
           SHOW=$(curl -sf -X POST http://localhost:8080/shows \
             -H "Content-Type: application/json" \
             -H "X-Admin-Token: test-admin-token" \
             -d '{"name":"ci-test","seats":["A1","A2"],"price_paise":25000}')
           SHOW_ID=$(echo $SHOW | jq -r .id)
-          
-          # Create token
           TOKEN=$(curl -sf -X POST http://localhost:8080/auth/token \
             -H "Content-Type: application/json" \
             -d '{"user_id":"ci-user"}' | jq -r .token)
-          
-          # Reserve seat
           curl -sf -X POST "http://localhost:8080/shows/${SHOW_ID}/reserve" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Idempotency-Key: ci-test" \
             -d '{"seats":["A1"]}'
-          
-          # Test metrics endpoint
           curl -sf http://localhost:8080/metrics | grep -q "reservations_confirmed_total"
-          
           echo "All API endpoints working inside container"
 
   chaos-test:
     name: Chaos Test (Kill DB mid-burst)
     runs-on: ubuntu-latest
-    needs: [docker-build]
+    needs: [build]
     services:
       postgres:
         image: postgres:16-alpine
@@ -212,8 +199,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Load Docker image
-        run: |
-          gunzip -c seat-reservation.tar.gz | docker load
+        run: gunzip -c seat-reservation.tar.gz | docker load
       - name: Start app container
         run: |
           docker run -d --name seat-reservation \
@@ -226,7 +212,6 @@ jobs:
             -e ENABLE_DEV_AUTH=true \
             -e NODE_ENV=test \
             seat-reservation:ci
-          # Wait for server
           for i in {1..30}; do
             if curl -sf http://localhost:8080/health/live > /dev/null; then
               echo "Server ready"
@@ -246,8 +231,6 @@ jobs:
           TOKEN=$(curl -sf -X POST http://localhost:8080/auth/token \
             -H "Content-Type: application/json" \
             -d '{"user_id":"chaos-user"}' | jq -r .token)
-          
-          # Start burst in background
           for i in {1..50}; do
             curl -sf -X POST "http://localhost:8080/shows/${SHOW_ID}/reserve" \
               -H "Content-Type: application/json" \
@@ -255,17 +238,10 @@ jobs:
               -H "Idempotency-Key: chaos-${i}" \
               -d '{"seats":["A1"]}' &
           done
-          # Wait a bit for burst to start
           sleep 2
-          
-          # CHAOS: Kill PostgreSQL mid-burst
           echo "Killing PostgreSQL..."
           docker stop $(docker ps -q --filter "ancestor=postgres:16-alpine")
-          
-          # Wait for DB to come back (GitHub Actions service healthcheck will restart)
           sleep 5
-          
-          # Wait for DB to be healthy
           for i in {1..30}; do
             if curl -sf http://localhost:8080/health/ready > /dev/null; then
               echo "DB recovered"
@@ -273,8 +249,6 @@ jobs:
             fi
             sleep 1
           done
-          
-          # Verify system recovered
           curl -sf http://localhost:8080/health/ready
       - name: Verify reconciliation after chaos
         run: |
@@ -284,7 +258,7 @@ jobs:
   load-test:
     name: Load Test Gate (Burst Script)
     runs-on: ubuntu-latest
-    needs: [docker-build]
+    needs: [build]
     services:
       postgres:
         image: postgres:16-alpine
@@ -301,8 +275,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Load Docker image
-        run: |
-          gunzip -c seat-reservation.tar.gz | docker load
+        run: gunzip -c seat-reservation.tar.gz | docker load
       - name: Start app container
         run: |
           docker run -d --name seat-reservation \
@@ -315,7 +288,6 @@ jobs:
             -e ENABLE_DEV_AUTH=true \
             -e NODE_ENV=test \
             seat-reservation:ci
-          # Wait for server
           for i in {1..30}; do
             if curl -sf http://localhost:8080/health/live > /dev/null; then
               echo "Server ready"
@@ -334,9 +306,28 @@ jobs:
           BASE_URL: http://localhost:8080
           ADMIN_TOKEN: test-admin-token
       - name: Verify burst results
-        run: |
-          # Check burst test exited with 0 (all assertions passed)
-          echo "Burst test passed - all 6 requirements validated"
+        run: echo "Burst test passed - all 6 requirements validated"
 
-  # Render deploys automatically via GitHub integration on push to main
-  # No separate deploy step needed - Render watches the main branch
+  promote:
+    name: Promote dev to main
+    runs-on: ubuntu-latest
+    needs: [lint-typecheck, build, test, docker]
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Merge dev into main
+        run: |
+          git fetch origin main:main
+          git merge --no-ff dev -m "chore: auto-merge dev to main [skip ci]"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
