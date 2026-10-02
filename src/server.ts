@@ -10,7 +10,7 @@ import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/e
 import { authRoutes } from './http/routes/auth.js';
 import { showsRoutes } from './http/routes/shows.js';
 import { reservationsRoutes } from './http/routes/reservations.js';
-import { metricsRoutes } from './observability/metrics.js';
+import { metricsRoutes, startMetricsLogging, stopMetricsLogging } from './observability/metrics.js';
 import { 
   httpRequestDuration, 
   http5xxTotal,
@@ -253,12 +253,20 @@ async function main() {
     dbInitialized = true;
     logger.info('Database initialized successfully');
 
+    // Start periodic metrics logging to file
+    startMetricsLogging();
+    logger.info('Metrics logging started');
+
     // Graceful shutdown
     let isShuttingDown = false;
     const shutdown = async (signal: string) => {
       if (isShuttingDown) return;
       isShuttingDown = true;
       logger.info({ signal }, 'Shutting down...');
+      
+      // Stop metrics logging
+      stopMetricsLogging();
+      
       await closePools();
       await app.close();
       process.exit(0);

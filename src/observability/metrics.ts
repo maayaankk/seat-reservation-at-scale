@@ -1,5 +1,6 @@
 import { Registry, collectDefaultMetrics, Counter, Gauge, Histogram } from 'prom-client';
 import { getPool } from '../db/pools.js';
+import { writeFileSync, appendFileSync } from 'node:fs';
 
 const register = new Registry();
 collectDefaultMetrics({ register, prefix: 'nodejs_' });
@@ -177,4 +178,55 @@ export async function metricsRoutes(app: any): Promise<void> {
     reply.header('Content-Type', register.contentType);
     return metrics;
   });
+}
+
+// Metrics log file path
+const METRICS_LOG_FILE = process.env.METRICS_LOG_FILE || 'metrics.log';
+const METRICS_LOG_INTERVAL_MS = parseInt(process.env.METRICS_LOG_INTERVAL_MS || '30000', 10);
+let metricsLogInterval: NodeJS.Timeout | null = null;
+
+export function startMetricsLogging(): void {
+  if (metricsLogInterval) return;
+  
+  // Write initial header
+  const header = `# Metrics log started at ${new Date().toISOString()}\n`;
+  writeFileSync(METRICS_LOG_FILE, header);
+  
+  metricsLogInterval = setInterval(async () => {
+    try {
+      const metrics = await getMetrics();
+      const timestamp = new Date().toISOString();
+      // Parse key metrics from Prometheus format
+      const lines = metrics.split('\n');
+      const summary: Record<string, number> = {};
+      
+      for (const line of lines) {
+        if (line.startsWith('#') || !line.trim()) continue;
+        const match = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\{([^}]*)\}\s+([\d.]+)/);
+        if (match) {
+          const [, name, labels, value] = match;
+          const key = `${name}{${labels}}`;
+          summary[key] = parseFloat(value);
+        }
+      }
+      
+      const logEntry = {
+        timestamp,
+        metrics: summary,
+      };
+      
+      appendFileSync(METRICS_LOG_FILE, JSON.stringify(logEntry) + '\n');
+    } catch (err) {
+      console.error('Failed to write metrics log:', err);
+    }
+  }, METRICS_LOG_INTERVAL_MS);
+  
+  metricsLogInterval.unref(); // Don't prevent process exit
+}
+
+export function stopMetricsLogging(): void {
+  if (metricsLogInterval) {
+    clearInterval(metricsLogInterval);
+    metricsLogInterval = null;
+  }
 }
