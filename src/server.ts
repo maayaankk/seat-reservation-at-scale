@@ -113,20 +113,20 @@ app.setNotFoundHandler(async (request, reply) => {
 });
 
 // Global error handler - unified error format
-app.setErrorHandler(async (error, request, reply) => {
+app.setErrorHandler(async (error: unknown, request, reply) => {
   const requestId = (reply.getHeader('x-request-id') as string) || crypto.randomUUID();
   reply.header('x-request-id', requestId);
 
   // Fastify validation errors
-  if (error.validation) {
+  if (error && typeof error === 'object' && 'validation' in error) {
     reply.code(400).send(createErrorResponse(
-      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: error.validation })
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: (error as any).validation })
     ));
     return;
   }
 
   // Zod validation errors
-  if (error.name === 'ZodError') {
+  if (error && typeof error === 'object' && 'name' in error && error.name === 'ZodError') {
     const zodError = error as any;
     reply.code(400).send(createErrorResponse(
       new AppError(400, ERROR_CODES.INVALID_BODY, 'Invalid request body', { issues: zodError.errors })
@@ -149,7 +149,7 @@ app.setErrorHandler(async (error, request, reply) => {
   }
 
   // JWT errors
-  if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+  if (error && typeof error === 'object' && 'name' in error && (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError')) {
     reply.code(401).send(createErrorResponse(
       new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Invalid or expired token')
     ));
