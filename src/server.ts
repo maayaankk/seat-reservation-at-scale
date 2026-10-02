@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
 import { config } from './config.js';
-import { createPools, closePools, getPool } from './db/pools.js';
+import { createPools, closePools } from './db/pools.js';
 import { runMigrations, waitForDb } from './db/migrate.js';
 import { runWithRequestContext } from './http/context.js';
 import { logger, getLogger } from './observability/logger.js';
@@ -11,6 +11,20 @@ import { authRoutes } from './http/routes/auth.js';
 import { showsRoutes } from './http/routes/shows.js';
 import { reservationsRoutes } from './http/routes/reservations.js';
 import { metricsRoutes } from './observability/metrics.js';
+import { 
+  httpRequestDuration, 
+  http5xxTotal,
+  reserveQueueDepth,
+  reserveInflight,
+  dbPoolCheckedOut,
+  dbPoolIdle
+} from './observability/metrics.js';
+import { 
+  writeSemaphore, 
+  readSemaphore, 
+  opsSemaphore 
+} from './lib/semaphore.js';
+import { getPool } from './db/pools.js';
 import { authHook, adminGuard } from './http/auth.js';
 
 const app = Fastify({ 
@@ -35,7 +49,7 @@ app.addHook('onRequest', async (request, reply) => {
   log.info({ method: request.method, url: request.url }, 'request started');
 });
 
-// Response logging
+// Response logging + HTTP metrics
 app.addHook('onResponse', async (request, reply) => {
   const ctx = { requestId: reply.getHeader('x-request-id') };
   runWithRequestContext(ctx as any, () => {
@@ -45,6 +59,29 @@ app.addHook('onResponse', async (request, reply) => {
       'request completed'
     );
   });
+
+  // HTTP request duration
+  const route = request.routeOptions?.url || 'unmatched';
+  httpRequestDuration.observe({ method: request.method, route, status: String(reply.statusCode) }, reply.elapsedTime / 1000);
+
+  // 5xx counter
+  if (reply.statusCode >= 500) {
+    const route = request.routeOptions?.url || 'unmatched';
+    http5xxTotal.inc({ route });
+  }
+
+  // Update queue/pool gauges
+  reserveQueueDepth.set(writeSemaphore.queued);
+  reserveInflight.set(writeSemaphore.inflight);
+  const writePool = getPool('write');
+  const readPool = getPool('read');
+  const opsPool = getPool('ops');
+  dbPoolCheckedOut.set({ pool: 'write' }, writePool.totalCount - writePool.idleCount);
+  dbPoolIdle.set({ pool: 'write' }, writePool.idleCount);
+  dbPoolCheckedOut.set({ pool: 'read' }, readPool.totalCount - readPool.idleCount);
+  dbPoolIdle.set({ pool: 'read' }, readPool.idleCount);
+  dbPoolCheckedOut.set({ pool: 'ops' }, opsPool.totalCount - opsPool.idleCount);
+  dbPoolIdle.set({ pool: 'ops' }, opsPool.idleCount);
 });
 
 // Error logging
