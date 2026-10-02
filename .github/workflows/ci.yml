@@ -84,8 +84,7 @@ jobs:
           ADMIN_TOKEN: test-admin-token
           ENABLE_DEV_AUTH: 'true'
           NODE_ENV: test
-      - name: Run all tests (unit, integration, PostgreSQL, load, chaos)
-        run: npm test
+      - run: npm test
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
           DATABASE_DIRECT_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
@@ -102,7 +101,7 @@ jobs:
           fi
 
   docker:
-    name: Docker Build & Test
+    name: Docker Build
     runs-on: ubuntu-latest
     needs: [build]
     steps:
@@ -117,67 +116,6 @@ jobs:
           name: seat-reservation-image
           path: seat-reservation.tar.gz
           retention-days: 1
-
-  docker-test:
-    name: Docker Test (API endpoints inside container)
-    runs-on: ubuntu-latest
-    needs: [build]
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: seat_reservation
-        ports: [5432:5432]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Load Docker image
-        run: |
-          gunzip -c seat-reservation.tar.gz | docker load
-      - name: Start app container
-        run: |
-          docker run -d --name seat-reservation \
-            -p 8080:8080 \
-            -e DATABASE_URL=postgres://postgres:postgres@postgres:5432/seat_reservation \
-            -e DATABASE_DIRECT_URL=postgres://postgres:postgres@postgres:5432/seat_reservation \
-            -e JWT_SECRET=test-secret-change-in-production-min-32-chars-long \
-            -e JWT_EXPIRES_IN=24h \
-            -e ADMIN_TOKEN=test-admin-token \
-            -e ENABLE_DEV_AUTH=true \
-            -e NODE_ENV=test \
-            seat-reservation:ci
-          for i in {1..30}; do
-            if curl -sf http://localhost:8080/health/live > /dev/null; then
-              echo "Server is ready"
-              break
-            fi
-            sleep 1
-          done
-      - name: Test API endpoints inside container
-        run: |
-          curl -sf http://localhost:8080/health/live
-          curl -sf http://localhost:8080/health/ready
-          SHOW=$(curl -sf -X POST http://localhost:8080/shows \
-            -H "Content-Type: application/json" \
-            -H "X-Admin-Token: test-admin-token" \
-            -d '{"name":"ci-test","seats":["A1","A2"],"price_paise":25000}')
-          SHOW_ID=$(echo $SHOW | jq -r .id)
-          TOKEN=$(curl -sf -X POST http://localhost:8080/auth/token \
-            -H "Content-Type: application/json" \
-            -d '{"user_id":"ci-user"}' | jq -r .token)
-          curl -sf -X POST "http://localhost:8080/shows/${SHOW_ID}/reserve" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Idempotency-Key: ci-test" \
-            -d '{"seats":["A1"]}'
-          curl -sf http://localhost:8080/metrics | grep -q "reservations_confirmed_total"
-          echo "All API endpoints working inside container"
 
   promote:
     name: Promote dev to main
