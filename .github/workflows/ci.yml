@@ -49,6 +49,29 @@ jobs:
           JWT_SECRET: test-secret-change-in-production-min-32-chars-long
           ADMIN_TOKEN: test-admin-token
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
+      # Start server in background for integration tests
+      - name: Start server
+        run: |
+          npm run build
+          npm start &
+          SERVER_PID=$!
+          echo "SERVER_PID=$SERVER_PID" >> $GITHUB_ENV
+          # Wait for server to be ready
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health/live > /dev/null; then
+              echo "Server is ready"
+              break
+            fi
+            sleep 1
+          done
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
+          DATABASE_DIRECT_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
+          JWT_SECRET: test-secret-change-in-production-min-32-chars-long
+          JWT_EXPIRES_IN: 24h
+          ADMIN_TOKEN: test-admin-token
+          ENABLE_DEV_AUTH: 'true'
+          NODE_ENV: test
       - run: npm test
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/seat_reservation
@@ -58,6 +81,13 @@ jobs:
           ADMIN_TOKEN: test-admin-token
           ENABLE_DEV_AUTH: 'true'
           NODE_ENV: test
+      # Stop server
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -n "$SERVER_PID" ]; then
+            kill $SERVER_PID || true
+          fi
 
   build:
     name: Build
