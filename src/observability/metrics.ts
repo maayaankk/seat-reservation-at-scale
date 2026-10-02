@@ -116,7 +116,7 @@ export const cleanupJobDuration = new Histogram({
   registers: [register],
 });
 
-const REASONS = ['seat_taken', 'per_user_limit', 'idempotent_replay', 'idempotency_conflict', 'seat_not_found', 'invalid_body'];
+export const REASONS = ['seat_taken', 'per_user_limit', 'idempotent_replay', 'idempotency_conflict', 'seat_not_found', 'invalid_body'];
 
 export function initMetricsForShow(showId: string): void {
   reservationsConfirmedTotal.inc({ show_id: showId }, 0);
@@ -157,6 +157,11 @@ export async function updateSeatGauges(): Promise<void> {
 
 export async function getMetrics(): Promise<string> {
   const now = Date.now();
+  if (process.env.NODE_ENV === 'test') {
+    // Disable cache in tests
+    await updateSeatGauges();
+    return register.metrics();
+  }
   if (gaugesCache && gaugesCache.expires > now) {
     return gaugesCache.data;
   }

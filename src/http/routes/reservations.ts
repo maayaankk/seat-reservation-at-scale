@@ -4,7 +4,7 @@ import { reserveSeats, cancelReservation, ReserveResult } from '../../services/r
 import { authHook } from '../auth.js';
 import { AppError, ERROR_CODES } from '../errors.js';
 import { writeSemaphore, readSemaphore, opsSemaphore } from '../../lib/semaphore.js';
-import { reserveQueueDepth, reserveInflight, dbRetriesTotal, reservationsConfirmedTotal, reservationsDeclinedTotal, reservationsCancelledTotal, seatsConfirmedTotal, seatsCancelledTotal } from '../../observability/metrics.js';
+import { reserveQueueDepth, reserveInflight, dbRetriesTotal } from '../../observability/metrics.js';
 
 const reserveBodySchema = z.object({
   seats: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,50}$/)).min(1).max(50),
@@ -67,16 +67,13 @@ export async function reservationsRoutes(app: FastifyInstance): Promise<void> {
       }));
 
       if (result.isReplay) {
-        reservationsDeclinedTotal.inc({ show_id: paramResult.data.id, reason: 'idempotent_replay' });
-      } else {
-        reservationsConfirmedTotal.inc({ show_id: paramResult.data.id });
-        seatsConfirmedTotal.inc({ show_id: paramResult.data.id }, result.reservation.seats.length);
+        // Replay already counted in service
       }
 
       reply.code(201).send(result.reservation);
     } catch (err) {
       if (err instanceof AppError) {
-        reservationsDeclinedTotal.inc({ show_id: paramResult.data.id, reason: mapErrorToReason(err.code) });
+        // Errors already counted in service
       }
       throw err;
     } finally {
@@ -92,11 +89,6 @@ export async function reservationsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const reservation = await writeSemaphore.run(() => cancelReservation(paramResult.data.id));
-
-    if (reservation.status === 'cancelled') {
-      reservationsCancelledTotal.inc({ show_id: reservation.show_id });
-      seatsCancelledTotal.inc({ show_id: reservation.show_id }, reservation.seats.length);
-    }
 
     reply.send(reservation);
   });

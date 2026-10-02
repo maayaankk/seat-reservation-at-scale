@@ -5,6 +5,13 @@ import { generateUuid, isValidUuid } from '../lib/uuid.js';
 import { canonicalizeSeats, canonicalSeatsHash } from '../lib/hash.js';
 import { AppError, ERROR_CODES } from '../http/errors.js';
 import { getCurrentAuthContext } from '../http/auth.js';
+import { 
+  reservationsConfirmedTotal,
+  reservationsDeclinedTotal,
+  reservationsCancelledTotal,
+  seatsConfirmedTotal,
+  seatsCancelledTotal 
+} from '../observability/metrics.js';
 
 export interface ReserveInput {
   seats: string[];
@@ -71,6 +78,7 @@ export async function reserveSeats(showId: string, input: ReserveInput): Promise
     if (idemResult.rows.length > 0) {
       const existing = idemResult.rows[0];
       if (existing.show_id !== showId || existing.seats_hash !== seatsHash) {
+        reservationsDeclinedTotal.inc({ show_id: showId, reason: 'idempotency_conflict' });
         throw new AppError(409, ERROR_CODES.IDEMPOTENCY_CONFLICT, 'Idempotency key used for different request');
       }
       if (existing.reservation_id) {
@@ -84,6 +92,7 @@ export async function reserveSeats(showId: string, input: ReserveInput): Promise
           throw new AppError(500, ERROR_CODES.INTERNAL, 'Idempotency record points to missing reservation');
         }
         const r = resResult.rows[0];
+        reservationsDeclinedTotal.inc({ show_id: showId, reason: 'idempotent_replay' });
         return {
           reservation: {
             reservation_id: r.id,
@@ -108,6 +117,7 @@ export async function reserveSeats(showId: string, input: ReserveInput): Promise
     );
     const used = Number(limitResult.rows[0].used);
     if (used + canonicalSeats.length > meta.per_user_limit) {
+      reservationsDeclinedTotal.inc({ show_id: showId, reason: 'per_user_limit' });
       throw new AppError(409, ERROR_CODES.USER_LIMIT_EXCEEDED, 'Per-user seat limit exceeded');
     }
 
@@ -124,11 +134,15 @@ export async function reserveSeats(showId: string, input: ReserveInput): Promise
     if (lockResult.rows.length !== canonicalSeats.length) {
       const foundLabels = new Set(lockResult.rows.map((r) => r.seat_label));
       const missing = canonicalSeats.find((s) => !foundLabels.has(s));
-      if (missing) throw new AppError(404, ERROR_CODES.SEAT_NOT_FOUND, `Seat ${missing} not found`);
+      if (missing) {
+        reservationsDeclinedTotal.inc({ show_id: showId, reason: 'seat_not_found' });
+        throw new AppError(404, ERROR_CODES.SEAT_NOT_FOUND, `Seat ${missing} not found`);
+      }
     }
 
     for (const row of lockResult.rows) {
       if (row.status !== 'available') {
+        reservationsDeclinedTotal.inc({ show_id: showId, reason: 'seat_taken' });
         throw new AppError(409, ERROR_CODES.SEAT_TAKEN, `Seat ${row.seat_label} is already taken`);
       }
     }
@@ -157,6 +171,10 @@ export async function reserveSeats(showId: string, input: ReserveInput): Promise
        VALUES ($1, $2, $3, $4, $5, $6, 'confirmed')`,
       [reservationId, showId, userId, canonicalSeats.length, canonicalSeats, amount]
     );
+
+    // Increment metrics for successful reservation
+    reservationsConfirmedTotal.inc({ show_id: showId });
+    seatsConfirmedTotal.inc({ show_id: showId }, canonicalSeats.length);
 
     return {
       reservation: {
@@ -187,7 +205,7 @@ export async function cancelReservation(reservationId: string): Promise<Reservat
 
   const result = await withTransactionRetry('write', async (client) => {
     const resResult = await client.query(
-      `SELECT id, user_id, status FROM reservations WHERE id = $1 FOR UPDATE`,
+      `SELECT id, user_id, status, seat_labels FROM reservations WHERE id = $1 FOR UPDATE`,
       [reservationId]
     );
     if (resResult.rows.length === 0) {
@@ -228,6 +246,10 @@ export async function cancelReservation(reservationId: string): Promise<Reservat
        WHERE reservation_id = $1 AND status = 'confirmed'`,
       [reservationId]
     );
+
+    // Increment metrics for cancellation
+    reservationsCancelledTotal.inc({ show_id: res.show_id });
+    seatsCancelledTotal.inc({ show_id: res.show_id }, res.seat_labels.length);
 
     const fullRes = await client.query(
       `SELECT id, show_id, user_id, seat_labels, amount_paise, status
