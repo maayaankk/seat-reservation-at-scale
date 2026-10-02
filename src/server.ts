@@ -10,6 +10,7 @@ import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/e
 import { authRoutes } from './http/routes/auth.js';
 import { showsRoutes } from './http/routes/shows.js';
 import { reservationsRoutes } from './http/routes/reservations.js';
+import { metricsRoutes } from './observability/metrics.js';
 import { authHook, adminGuard } from './http/auth.js';
 
 const app = Fastify({ 
@@ -133,6 +134,9 @@ await app.register(showsRoutes);
 
 // Reservations routes
 await app.register(reservationsRoutes);
+
+// Metrics routes (ops lane)
+await app.register(metricsRoutes);
 
 // Health endpoints
 app.get('/health/live', async () => {
