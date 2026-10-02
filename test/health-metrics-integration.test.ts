@@ -71,8 +71,22 @@ describe('metrics integration', () => {
     });
     const { token } = await tokenResponse.json();
     
+    // Create a new show for this test
+    const newShow = await (await fetch('http://localhost:8080/shows', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'X-Admin-Token': 'dev-admin-token-change-in-production'
+      },
+      body: JSON.stringify({ 
+        name: `integration-test-${Date.now()}`, 
+        seats: ['A1', 'A2'], 
+        price_paise: 25000 
+      }),
+    })).json();
+    
     // Make a reservation
-    await fetch(`http://localhost:8080/shows/${showId}/reserve`, {
+    await fetch(`http://localhost:8080/shows/${newShow.id}/reserve`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -90,7 +104,7 @@ describe('metrics integration', () => {
     expect(metricsResponse.status).toBe(200);
     
     // Get show state from API
-    const showResponse = await fetch(`http://localhost:8080/shows/${showId}?include_seats=false`);
+    const showResponse = await fetch(`http://localhost:8080/shows/${newShow.id}?include_seats=false`);
     const showData = await showResponse.json();
     
     // Verify gauge matches API

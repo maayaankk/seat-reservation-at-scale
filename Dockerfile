@@ -52,4 +52,4 @@ EXPOSE 8080
 # Graceful shutdown
 STOPSIGNAL SIGTERM
 
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/src/server.js"]

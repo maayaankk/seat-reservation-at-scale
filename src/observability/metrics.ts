@@ -180,8 +180,10 @@ export async function metricsRoutes(app: any): Promise<void> {
   });
 }
 
-// Metrics log file path
-const METRICS_LOG_FILE = process.env.METRICS_LOG_FILE || 'metrics.log';
+// Metrics log file path - use /tmp for container compatibility with non-root user
+function getMetricsLogFile(): string {
+  return process.env.METRICS_LOG_FILE || '/tmp/metrics.log';
+}
 const METRICS_LOG_INTERVAL_MS = parseInt(process.env.METRICS_LOG_INTERVAL_MS || '30000', 10);
 let metricsLogInterval: NodeJS.Timeout | null = null;
 
@@ -190,7 +192,8 @@ export function startMetricsLogging(): void {
   
   // Write initial header
   const header = `# Metrics log started at ${new Date().toISOString()}\n`;
-  writeFileSync(METRICS_LOG_FILE, header);
+  const logFile = getMetricsLogFile();
+  writeFileSync(logFile, header);
   
   metricsLogInterval = setInterval(async () => {
     try {
@@ -215,7 +218,7 @@ export function startMetricsLogging(): void {
         metrics: summary,
       };
       
-      appendFileSync(METRICS_LOG_FILE, JSON.stringify(logEntry) + '\n');
+      appendFileSync(getMetricsLogFile(), JSON.stringify(logEntry) + '\n');
     } catch (err) {
       console.error('Failed to write metrics log:', err);
     }
