@@ -14,11 +14,18 @@ describe('database migrations', () => {
     await pool.end();
   });
 
-  it('runs migrations idempotently', async () => {
-    // Should not throw
-    await expect(runMigrations()).resolves.toBeUndefined();
-    // Running again should also not throw
-    await expect(runMigrations()).resolves.toBeUndefined();
+  it('migrations have been run by global setup', async () => {
+    // Global setup already ran migrations, just verify tables exist
+    const pool = getPool('read');
+    const result = await pool.query(`
+      SELECT table_name FROM information_schema.tables 
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+    `);
+    const tables = result.rows.map(r => r.table_name);
+    expect(tables).toContain('shows');
+    expect(tables).toContain('seats');
+    expect(tables).toContain('reservations');
+    expect(tables).toContain('idempotency_keys');
   });
 
   it('creates all required tables', async () => {

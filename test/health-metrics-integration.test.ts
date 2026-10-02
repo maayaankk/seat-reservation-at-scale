@@ -3,6 +3,7 @@ import { createShow } from '../src/services/show.service.js';
 import { reserveSeats, cancelReservation } from '../src/services/reservation.service.js';
 import { getPool } from '../src/db/pools.js';
 import { setupAuthContext } from './setup.js';
+import { initMetricsForShow, getMetrics, REASONS } from '../src/observability/metrics.js';
 
 describe('health endpoints', () => {
   it('GET /health/live returns 200 without DB check', async () => {
@@ -29,6 +30,7 @@ describe('metrics integration', () => {
   let showId: string;
 
   beforeAll(async () => {
+    setupAuthContext('test-user');
     const show = await createShow({
       name: `integration-test-${Date.now()}`,
       seats: ['A1', 'A2', 'A3'],
@@ -36,6 +38,12 @@ describe('metrics integration', () => {
       per_user_limit: 4,
     });
     showId = show.id;
+    // Initialize metrics for this show
+    initMetricsForShow(showId);
+  });
+
+  beforeEach(() => {
+    setupAuthContext('test-user');
   });
 
   it('GET /metrics returns all metric types', async () => {
@@ -63,90 +71,66 @@ describe('metrics integration', () => {
   });
 
   it('metrics reconcile with API state', async () => {
-    // Get a token
-    const tokenResponse = await fetch('http://localhost:8080/auth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: 'integration-user' }),
-    });
-    const { token } = await tokenResponse.json();
-    
     // Create a new show for this test
-    const newShow = await (await fetch('http://localhost:8080/shows', {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'X-Admin-Token': 'dev-admin-token-change-in-production'
-      },
-      body: JSON.stringify({ 
-        name: `integration-test-${Date.now()}`, 
-        seats: ['A1', 'A2'], 
-        price_paise: 25000 
-      }),
-    })).json();
+    const show = await createShow({
+      name: `integration-test-${Date.now()}`,
+      seats: ['A1', 'A2'],
+      price_paise: 25000,
+      per_user_limit: 4,
+    });
+    initMetricsForShow(show.id);
     
-    // Make a reservation
-    await fetch(`http://localhost:8080/shows/${newShow.id}/reserve`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-        'Idempotency-Key': `integration-${Date.now()}`
-      },
-      body: JSON.stringify({ seats: ['A1'] }),
+    // Make a reservation using service directly
+    await reserveSeats(show.id, { 
+      seats: ['A1'], 
+      idempotencyKey: `integration-${Date.now()}` 
     });
     
     // Get metrics
-    const metricsResponse = await fetch('http://localhost:8080/metrics');
-    const metricsText = await metricsResponse.text();
+    const metricsText = await getMetrics();
     
     // Should have confirmed counter
-    expect(metricsResponse.status).toBe(200);
+    expect(metricsText).toContain('reservations_confirmed_total');
     
-    // Get show state from API
-    const showResponse = await fetch(`http://localhost:8080/shows/${newShow.id}?include_seats=false`);
-    const showData = await showResponse.json();
+    // Get show state from database directly
+    const pool = await import('../src/db/pools.js').then(m => m.getPool('read'));
+    const result = await pool.query(
+      `SELECT COUNT(*) as count FROM seats WHERE show_id = $1 AND status = 'confirmed'`,
+      [show.id]
+    );
+    const confirmed = parseInt(result.rows[0].count, 10);
     
-    // Verify gauge matches API
-    expect(showData.confirmed).toBeGreaterThanOrEqual(1);
+    // Verify gauge matches database state
+    expect(confirmed).toBeGreaterThanOrEqual(1);
   });
 
   it('all decline reason series are pre-initialized for new show', async () => {
     // Create a new show and check its metrics are initialized
-    const newShow = await (await fetch('http://localhost:8080/shows', {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'X-Admin-Token': 'dev-admin-token-change-in-production'
-      },
-      body: JSON.stringify({ 
-        name: `preinit-test-${Date.now()}`, 
-        seats: ['P1', 'P2'], 
-        price_paise: 25000 
-      }),
-    })).json();
+    const newShow = await createShow({
+      name: `preinit-test-${Date.now()}`,
+      seats: ['P1', 'P2'],
+      price_paise: 25000,
+    });
+    initMetricsForShow(newShow.id);
     
-    // The metrics might be cached, so we need to wait for cache to expire
-    // For now, just verify the show was created
-    expect(newShow.id).toBeDefined();
+    // Check that metrics are initialized for this show
+    const metricsText = await getMetrics();
+    
+    // Check that the new show has all reason series initialized to 0
+    for (const reason of ['seat_taken', 'per_user_limit', 'idempotent_replay', 'idempotency_conflict', 'seat_not_found', 'invalid_body']) {
+      expect(metricsText).toContain(`reservations_declined_total{show_id="${newShow.id}",reason="${reason}"} 0`);
+    }
   });
 });
 
 describe('health/ready during burst', () => {
   it('stays responsive during concurrent requests', async () => {
-    const show = await (await fetch('http://localhost:8080/shows', {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'X-Admin-Token': 'dev-admin-token-change-in-production'
-      },
-      body: JSON.stringify({ 
-        name: `burst-health-${Date.now()}`, 
-        seats: ['H1', 'H2'], 
-        price_paise: 25000,
-        per_user_limit: 4
-      }),
-    })).json();
+    const show = await createShow({
+      name: `burst-health-${Date.now()}`,
+      seats: ['H1', 'H2'],
+      price_paise: 25000,
+      per_user_limit: 4
+    });
     
     const tokenResponse = await fetch('http://localhost:8080/auth/token', {
       method: 'POST',
