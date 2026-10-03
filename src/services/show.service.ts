@@ -49,17 +49,25 @@ export async function createShow(input: CreateShowInput): Promise<ShowResponse> 
   const showId = generateUuid();
 
   await withTransactionRetry('write', async (client) => {
-    await client.query(
-      `INSERT INTO shows (id, name, price_paise, per_user_limit, total_seats) VALUES ($1, $2, $3, $4, $5)`,
-      [showId, name, price_paise, per_user_limit, uniqueSeats.length]
-    );
+    try {
+      await client.query(
+        `INSERT INTO shows (id, name, price_paise, per_user_limit, total_seats) VALUES ($1, $2, $3, $4, $5)`,
+        [showId, name, price_paise, per_user_limit, uniqueSeats.length]
+      );
 
-    const seatValues = uniqueSeats.map((label, idx) => `($1, $${idx + 2}, 'available')`).join(', ');
-    const seatParams = [showId, ...uniqueSeats];
-    await client.query(
-      `INSERT INTO seats (show_id, seat_label, status) VALUES ${seatValues}`,
-      seatParams
-    );
+      const seatValues = uniqueSeats.map((label, idx) => `($1, $${idx + 2}, 'available')`).join(', ');
+      const seatParams = [showId, ...uniqueSeats];
+      await client.query(
+        `INSERT INTO seats (show_id, seat_label, status) VALUES ${seatValues}`,
+        seatParams
+      );
+    } catch (err: any) {
+      // Handle unique constraint violation on show name
+      if (err.code === '23505' && err.constraint === 'shows_name_key') {
+        throw new AppError(409, ERROR_CODES.SHOW_EXISTS, 'Show with this name already exists');
+      }
+      throw err;
+    }
   });
 
   const meta = {

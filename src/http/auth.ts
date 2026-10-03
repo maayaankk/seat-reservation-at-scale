@@ -89,8 +89,22 @@ export function createDevToken(userId: string): string {
     throw new AppError(403, ERROR_CODES.FORBIDDEN, 'Dev auth endpoint disabled');
   }
   const expiresIn = config.JWT_EXPIRES_IN;
+  // Parse duration string like "24h", "7d", "30m" to seconds
+  const parseDuration = (duration: string): number => {
+    const match = duration.match(/^(\d+)([smhd])$/);
+    if (!match) return 86400; // default 24h
+    const value = parseInt(match[1], 10);
+    const unit = match[2];
+    switch (unit) {
+      case 's': return value;
+      case 'm': return value * 60;
+      case 'h': return value * 3600;
+      case 'd': return value * 86400;
+      default: return 86400;
+    }
+  };
   return jwt.sign({ sub: userId }, config.JWT_SECRET, { 
-    expiresIn: parseInt(expiresIn) || 86400, 
+    expiresIn: parseDuration(expiresIn), 
     algorithm: 'HS256' 
   });
 }

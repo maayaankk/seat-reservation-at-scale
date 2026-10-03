@@ -1,0 +1,568 @@
+{
+  "info": {
+    "name": "Seat Reservation API",
+    "description": "Complete API collection for Seat Reservation at Scale - High-concurrency seat reservation system with atomic PostgreSQL transactions, idempotency, and per-user limits",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "1",
+    "version": "1.0.0"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "admin_token",
+      "value": "dev-admin-token-change-in-production",
+      "type": "string"
+    },
+    {
+      "key": "jwt_secret",
+      "value": "dev-secret-change-in-production-min-32-chars-long",
+      "type": "string"
+    },
+    {
+      "key": "show_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "reservation_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "user_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "idempotency_key",
+      "value": "test-key-{{$timestamp}}",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Endpoints",
+      "item": [
+        {
+          "name": "GET /health/live - Liveness Check",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health/live",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "{{$guid}}"
+              }
+            ],
+            "description": "Liveness probe - Always returns 200, no DB check. Used by load balancer to check if process is alive."
+          },
+          "response": [
+            {
+              "status": "200 OK",
+              "body": "{\n  \"status\": \"ok\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET /health/ready - Readiness Check",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health/ready",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "{{$guid}}"
+              }
+            ],
+            "description": "Readiness probe - Returns 200 if DB is reachable, 503 if DB is down. Used by load balancer to route traffic."
+          },
+          "response": [
+            {
+              "status": "200 OK",
+              "body": "{\n  \"status\": \"ready\"\n}"
+            },
+            {
+              "status": "503 Service Unavailable",
+              "body": "{\n  \"status\": \"not ready\",\n  \"reason\": \"db unavailable\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "POST /auth/token - Get Dev JWT Token",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/auth/token",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"test-user\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Dev-only endpoint to mint JWT tokens for testing. Requires ENABLE_DEV_AUTH=true. Returns JWT with 24h expiry."
+          },
+          "response": [
+            {
+              "status": "200 OK",
+              "body": "{\n  \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\",\n  \"expires_in\": 86400\n}"
+            },
+            {
+              "status": "403 Forbidden",
+              "body": "{\n  \"error\": \"Forbidden\",\n  \"message\": \"Dev auth endpoint disabled\",\n  \"code\": \"FORBIDDEN\"\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) { const json = pm.response.json(); pm.environment.set('user_token', json.token); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Shows",
+      "item": [
+        {
+          "name": "POST /shows - Create Show (Admin)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/shows",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Admin-Token",
+                "value": "{{admin_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"friday-night\",\n  \"seats\": [\"A1\", \"A2\", \"A3\", \"A12\", \"A13\", \"A14\"],\n  \"price_paise\": 25000,\n  \"per_user_limit\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Create a new show with seats. Requires X-Admin-Token header. Seats must be unique, max 50,000 seats. Price in paise (integer). per_user_limit defaults to 4."
+          },
+          "response": [
+            {
+              "status": "201 Created",
+              "body": "{\n  \"id\": \"uuid\",\n  \"name\": \"friday-night\",\n  \"price_paise\": 25000,\n  \"per_user_limit\": 4,\n  \"total_seats\": 6,\n  \"available\": 6,\n  \"held\": 0,\n  \"confirmed\": 0,\n  \"seats\": [\n    {\n      \"label\": \"A1\",\n      \"status\": \"available\"\n    },\n    {\n      \"label\": \"A2\",\n      \"status\": \"available\"\n    },\n    {\n      \"label\": \"A3\",\n      \"status\": \"available\"\n    }\n  ]\n}"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) { const json = pm.response.json(); pm.environment.set('show_id', json.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /shows/{id} - Get Show with Full Seat List",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/shows/{{show_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Get full show details including all seats with their status. Returns 404 if show not found."
+          },
+          "response": [
+            {
+              "status": "200 OK",
+              "body": "{\n  \"id\": \"uuid\",\n  \"name\": \"friday-night\",\n  \"price_paise\": 25000,\n  \"per_user_limit\": 4,\n  \"total_seats\": 6,\n  \"available\": 3,\n  \"held\": 0,\n  \"confirmed\": 3,\n  \"seats\": [\n    {\n      \"label\": \"A1\",\n      \"status\": \"confirmed\"\n    },\n    {\n      \"label\": \"A2\",\n      \"status\": \"available\"\n    }\n  ]\n}"
+            }
+          ]
+        },
+        {
+          "name": "GET /shows/{id}?include_seats=false - Get Show Counts Only",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/shows/{{show_id}}?include_seats=false",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Get show counts only (available/held/confirmed) without full seat list. Much faster for large venues."
+          },
+          "response": [
+            {
+              "status": "200 OK",
+              "body": "{\n  \"id\": \"uuid\",\n  \"name\": \"friday-night\",\n  \"price_paise\": 25000,\n  \"per_user_limit\": 4,\n  \"total_seats\": 100,\n  \"available\": 95,\n  \"held\": 0,\n  \"confirmed\": 5\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Reservations",
+      "item": [
+        {
+          "name": "POST /shows/{id}/reserve - Reserve Seats",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/shows/{{show_id}}/reserve",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotency_key}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"seats\": [\"A1\", \"A2\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Reserve seats for a show. Requires JWT Bearer token and Idempotency-Key header (or body field). All-or-nothing: all seats confirmed or none. Returns 201 with reservation details."
+          },
+          "response": [
+            {
+              "name": "201 Created - New Reservation",
+              "status": "201 Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"reservation_id\": \"uuid\",\n  \"show_id\": \"uuid\",\n  \"user_id\": \"test-user\",\n  \"seats\": [\"A1\", \"A2\"],\n  \"amount_paise\": 50000,\n  \"status\": \"confirmed\"\n            }"
+            },
+            {
+              "name": "201 Created - Idempotent Replay",
+              "status": "201 Created",
+              "code": 201,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"reservation_id\": \"uuid\",\n  \"show_id\": \"uuid\",\n  \"user_id\": \"test-user\",\n  \"seats\": [\"A1\", \"A2\"],\n  \"amount_paise\": 50000,\n  \"status\": \"confirmed\"\n            }"
+            },
+            {
+              "name": "409 Conflict - Seat Already Taken",
+              "status": "409 Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"error\": \"Conflict\",\n  \"message\": \"Seat A12 is already taken\",\n  \"code\": \"SEAT_TAKEN\"\n            }"
+            },
+            {
+              "name": "409 Conflict - Idempotency Conflict",
+              "status": "409 Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"error\": \"Conflict\",\n  \"message\": \"Idempotency key used for different request\",\n  \"code\": \"IDEMPOTENCY_CONFLICT\"\n            }"
+            },
+            {
+              "name": "409 Conflict - Per User Limit Exceeded",
+              "status": "409 Conflict",
+              "code": 409,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"error\": \"Conflict\",\n  \"message\": \"Per-user seat limit exceeded\",\n  \"code\": \"USER_LIMIT_EXCEEDED\"\n            }"
+            },
+            {
+              "name": "404 Not Found - Seat Not Found",
+              "status": "404 Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"error\": \"NotFound\",\n  \"message\": \"Seat A99 not found\",\n  \"code\": \"SEAT_NOT_FOUND\"\n            }"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201 && pm.response.json().isReplay === false) { pm.environment.set('reservation_id', pm.response.json().reservation_id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /reservations/{id}/cancel - Cancel Reservation",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/reservations/{{reservation_id}}/cancel",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{user_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Cancel a reservation. Only the owner can cancel. Returns 200 with cancelled reservation. Idempotent - repeat cancels return 200 with cancelled status. Seats become available again."
+          },
+          "response": [
+            {
+              "name": "200 OK - Cancelled",
+              "status": "200 OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"reservation_id\": \"uuid\",\n  \"show_id\": \"uuid\",\n  \"user_id\": \"test-user\",\n  \"seats\": [\"A1\", \"A2\"],\n  \"amount_paise\": 50000,\n  \"status\": \"cancelled\"\n            }"
+            },
+            {
+              "name": "403 Forbidden - Not Owner",
+              "status": "403 Forbidden",
+              "code": 403,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"error\": \"Forbidden\",\n  \"message\": \"Not owner of reservation\",\n  \"code\": \"FORBIDDEN\"\n            }"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "404 Not Found",
+              "code": 404,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"error\": \"NotFound\",\n  \"message\": \"Reservation not found\",\n  \"code\": \"NOT_FOUND\"\n            }"
+            },
+            {
+              "name": "200 OK - Idempotent Repeat Cancel",
+              "status": "200 OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"reservation_id\": \"uuid\",\n  \"show_id\": \"uuid\",\n  \"user_id\": \"test-user\",\n  \"seats\": [\"A1\"],\n  \"amount_paise\": 25000,\n  \"status\": \"cancelled\"\n            }"
+            }
+          ],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200 && pm.response.json().status === 'cancelled') { pm.environment.set('cancelled_reservation_id', pm.response.json().reservation_id); }"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Observability",
+      "item": [
+        {
+          "name": "GET /metrics - Prometheus Metrics",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/metrics",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "description": "Prometheus metrics endpoint. Returns all metrics in Prometheus text format."
+          },
+          "response": [
+            {
+              "status": "200 OK",
+              "body": "# HELP reservations_confirmed_total Total new reservations confirmed\n# TYPE reservations_confirmed_total counter\nreservations_confirmed_total{show_id=\"...\"} 42\n# HELP reservations_declined_total Total reservations declined by reason\n# TYPE reservations_declined_total counter\nreservations_declined_total{show_id=\"...\",reason=\"seat_taken\"} 15\n# HELP seats_available{show_id} Current available seats\n# TYPE seats_available gauge\nseats_available{show_id=\"...\"} 45"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Admin Operations",
+      "item": [
+        {
+          "name": "POST /shows - Create Show (Admin)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/shows",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Admin-Token",
+                "value": "{{admin_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"friday-night\",\n  \"seats\": [\"A1\", \"A2\", \"A3\", \"A12\", \"A13\", \"A14\"],\n  \"price_paise\": 25000,\n  \"per_user_limit\": 4\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Create a new show with seats. Requires X-Admin-Token header. Seats must be unique, max 50,000 seats. Price in paise (integer). per_user_limit defaults to 4."
+          },
+          "response": [
+            {
+              "status": "201 Created",
+              "body": "{\n  \"id\": \"uuid\",\n  \"name\": \"friday-night\",\n  \"price_paise\": 25000,\n  \"per_user_limit\": 4,\n  \"total_seats\": 6,\n  \"available\": 6,\n  \"held\": 0,\n  \"confirmed\": 0,\n  \"seats\": [\n    {\n      \"label\": \"A1\",\n      \"status\": \"available\"\n    },\n    {\n      \"label\": \"A2\",\n      \"status\": \"available\"\n    },\n    {\n      \"label\": \"A3\",\n      \"status\": \"available\"\n    }\n  ]\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Auto-generate idempotency key if not set",
+          "if (!pm.variables.has('idempotency_key') || String(pm.variables.get('idempotency_key')).startsWith('test-key-')) {",
+          "    pm.variables.set('idempotency_key', 'test-key-' + Date.now());",
+          "}",
+          "",
+          "// Auto-add request ID using Postman's built-in GUID variable",
+          "pm.request.headers.add({ key: 'X-Request-ID', value: pm.variables.replaceIn('{{$guid}}') });"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Auto-capture show_id from create show response",
+          "if (pm.response.code === 201 && pm.response.json().id) {",
+          "  pm.environment.set('show_id', pm.response.json().id);",
+          "}"
+        ]
+      }
+    }
+  ],
+  "protocolProfileBehavior": {
+    "disableBodyPruning": true,
+    "followRedirects": false
+  }
+}
