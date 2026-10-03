@@ -133,7 +133,23 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Check if dev is ahead of main
+        id: check_ahead
+        run: |
+          git fetch origin main:main
+          # Check if dev is ahead of main
+          if git merge-base --is-ancestor main dev; then
+            # Check if dev is strictly ahead (not equal)
+            if [ "$(git rev-parse dev)" != "$(git rev-parse main)" ]; then
+              echo "ahead=true" >> $GITHUB_OUTPUT
+            else
+              echo "ahead=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "ahead=false" >> $GITHUB_OUTPUT
+          fi
       - name: Merge dev into main
+        if: steps.check_ahead.outputs.ahead == 'true'
         run: |
           git fetch origin main:main
           git merge --no-ff dev -m "chore: auto-merge dev to main [skip ci]"
