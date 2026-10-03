@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS seats (
   seat_label VARCHAR(50) NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'available'
      CHECK (status IN ('available','held','confirmed')),
-  reservation_id UUID REFERENCES reservations(id),
+  reservation_id UUID REFERENCES reservations(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   UNIQUE (show_id, seat_label),
   CHECK ((status = 'available') = (reservation_id IS NULL))
 );
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   key VARCHAR(255) NOT NULL,
   show_id UUID NOT NULL,
   seats_hash TEXT NOT NULL,
-  reservation_id UUID REFERENCES reservations(id) ON DELETE CASCADE,
+  reservation_id UUID REFERENCES reservations(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
   PRIMARY KEY (user_id, key)
 );
 
@@ -65,8 +65,36 @@ export async function runMigrations(): Promise<void> {
 
   const client = await pool.connect();
   try {
+    // Use advisory lock to prevent concurrent migrations
     await client.query("SELECT pg_advisory_xact_lock(1234567890)");
+    
+    // Run the inline schema
     await client.query(INIT_SQL);
+    
+    // ALTER existing tables to make FK constraints DEFERRABLE INITIALLY DEFERRED
+    // This handles the case where tables already exist with non-deferrable FKs
+    await client.query(`
+      ALTER TABLE idempotency_keys 
+      DROP CONSTRAINT IF EXISTS idempotency_keys_reservation_id_fkey;
+    `);
+    await client.query(`
+      ALTER TABLE idempotency_keys 
+      ADD CONSTRAINT idempotency_keys_reservation_id_fkey 
+      FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE 
+      DEFERRABLE INITIALLY DEFERRED;
+    `);
+    
+    await client.query(`
+      ALTER TABLE seats 
+      DROP CONSTRAINT IF EXISTS seats_reservation_id_fkey;
+    `);
+    await client.query(`
+      ALTER TABLE seats 
+      ADD CONSTRAINT seats_reservation_id_fkey 
+      FOREIGN KEY (reservation_id) REFERENCES reservations(id) ON DELETE CASCADE 
+      DEFERRABLE INITIALLY DEFERRED;
+    `);
+    
     console.log('Migrations completed successfully');
   } finally {
     client.release();
@@ -85,12 +113,10 @@ export async function waitForDb(maxAttempts = 30, delayMs = 2000): Promise<void>
     try {
       await pool.query('SELECT 1');
       await pool.end();
-      console.log('Database is ready');
       return;
     } catch {
       await pool.end();
       if (attempt === maxAttempts) throw new Error('Database unavailable after retries');
-      console.log(`Waiting for database... attempt ${attempt}/${maxAttempts}`);
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }

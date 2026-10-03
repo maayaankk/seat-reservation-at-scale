@@ -10,8 +10,9 @@ export function isValidUuid(id: string): boolean {
 export function validateUuidParam(id: string, paramName = 'id'): void {
   if (!isValidUuid(id)) {
     const error = new Error(`Invalid ${paramName}`);
-    (error as any).statusCode = 404;
-    (error as any).code = 'NOT_FOUND';
+    const err = error as Error & { statusCode?: number; code?: string };
+    err.statusCode = 404;
+    err.code = 'NOT_FOUND';
     throw error;
   }
 }

@@ -1,14 +1,34 @@
 import 'dotenv/config';
 import Fastify from 'fastify';
 import { config } from './config.js';
-import { createPools, closePools, getPool } from './db/pools.js';
+import { createPools, closePools } from './db/pools.js';
 import { runMigrations, waitForDb } from './db/migrate.js';
 import { runWithRequestContext } from './http/context.js';
 import { logger, getLogger } from './observability/logger.js';
 import { isValidUuid } from './lib/uuid.js';
 import { AppError, ERROR_CODES, isAppError, createErrorResponse } from './http/errors.js';
+import { authRoutes } from './http/routes/auth.js';
+import { showsRoutes } from './http/routes/shows.js';
+import { reservationsRoutes } from './http/routes/reservations.js';
+import { metricsRoutes, startMetricsLogging, stopMetricsLogging } from './observability/metrics.js';
+import { 
+  httpRequestDuration, 
+  http5xxTotal,
+  reserveQueueDepth,
+  reserveInflight,
+  dbPoolCheckedOut,
+  dbPoolIdle
+} from './observability/metrics.js';
+import { 
+  writeSemaphore 
+} from './lib/semaphore.js';
+import { getPool } from './db/pools.js';
+import { authHook, adminGuard } from './http/auth.js';
 
-const app = Fastify({ logger: false });
+const app = Fastify({ 
+  logger: false,
+  bodyLimit: 1048576 // 1MB
+});
 
 let dbInitialized = false;
 
@@ -27,37 +47,49 @@ app.addHook('onRequest', async (request, reply) => {
   log.info({ method: request.method, url: request.url }, 'request started');
 });
 
-// Response logging
+// Response logging + HTTP metrics
 app.addHook('onResponse', async (request, reply) => {
-  const ctx = { requestId: reply.getHeader('x-request-id') };
-  runWithRequestContext(ctx as any, () => {
+  const ctx = { requestId: reply.getHeader('x-request-id') as string, startTime: Date.now() };
+  runWithRequestContext(ctx, () => {
     const log = getLogger();
     log.info(
       { method: request.method, url: request.url, statusCode: reply.statusCode, durationMs: reply.elapsedTime },
       'request completed'
     );
   });
+
+  // HTTP request duration
+  const route = request.routeOptions?.url || 'unmatched';
+  httpRequestDuration.observe({ method: request.method, route, status: String(reply.statusCode) }, reply.elapsedTime / 1000);
+
+  // 5xx counter
+  if (reply.statusCode >= 500) {
+    const route = request.routeOptions?.url || 'unmatched';
+    http5xxTotal.inc({ route });
+  }
+
+  // Update queue/pool gauges
+  reserveQueueDepth.set(writeSemaphore.queued);
+  reserveInflight.set(writeSemaphore.inflight);
+  const writePool = getPool('write');
+  const readPool = getPool('read');
+  const opsPool = getPool('ops');
+  dbPoolCheckedOut.set({ pool: 'write' }, writePool.totalCount - writePool.idleCount);
+  dbPoolIdle.set({ pool: 'write' }, writePool.idleCount);
+  dbPoolCheckedOut.set({ pool: 'read' }, readPool.totalCount - readPool.idleCount);
+  dbPoolIdle.set({ pool: 'read' }, readPool.idleCount);
+  dbPoolCheckedOut.set({ pool: 'ops' }, opsPool.totalCount - opsPool.idleCount);
+  dbPoolIdle.set({ pool: 'ops' }, opsPool.idleCount);
 });
 
 // Error logging
 app.addHook('onError', async (request, reply, error) => {
-  const ctx = { requestId: reply.getHeader('x-request-id') };
-  runWithRequestContext(ctx as any, () => {
+  const requestId = (reply.getHeader('x-request-id') as string) || crypto.randomUUID();
+  const ctx = { requestId, startTime: Date.now() };
+  runWithRequestContext(ctx, () => {
     const log = getLogger();
     log.error({ err: error, method: request.method, url: request.url }, 'request error');
   });
-});
-
-// Request ID with AsyncLocalStorage
-app.addHook('onRequest', async (request, reply) => {
-  const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
-  reply.header('x-request-id', requestId);
-  
-  const ctx = {
-    requestId,
-    startTime: Date.now(),
-  };
-  runWithRequestContext(ctx, () => {});
 });
 
 // UUID path validation - catch invalid UUID params before route handlers
@@ -80,21 +112,22 @@ app.setNotFoundHandler(async (request, reply) => {
 });
 
 // Global error handler - unified error format
-app.setErrorHandler(async (error, request, reply) => {
+app.setErrorHandler(async (error: unknown, request, reply) => {
   const requestId = (reply.getHeader('x-request-id') as string) || crypto.randomUUID();
   reply.header('x-request-id', requestId);
 
   // Fastify validation errors
-  if (error.validation) {
+  if (error && typeof error === 'object' && 'validation' in error) {
+    const fastifyError = error as { validation: Array<{ message: string; params: unknown[] }> };
     reply.code(400).send(createErrorResponse(
-      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: error.validation })
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: fastifyError.validation })
     ));
     return;
   }
 
   // Zod validation errors
-  if (error.name === 'ZodError') {
-    const zodError = error as any;
+  if (error && typeof error === 'object' && 'name' in error && error.name === 'ZodError') {
+    const zodError = error as unknown as { errors: Array<{ message: string; path: (string | number)[] }> };
     reply.code(400).send(createErrorResponse(
       new AppError(400, ERROR_CODES.INVALID_BODY, 'Invalid request body', { issues: zodError.errors })
     ));
@@ -116,7 +149,7 @@ app.setErrorHandler(async (error, request, reply) => {
   }
 
   // JWT errors
-  if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+  if (error && typeof error === 'object' && 'name' in error && (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError')) {
     reply.code(401).send(createErrorResponse(
       new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Invalid or expired token')
     ));
@@ -129,6 +162,18 @@ app.setErrorHandler(async (error, request, reply) => {
     new AppError(500, ERROR_CODES.INTERNAL, 'Internal server error')
   ));
 });
+
+// Auth routes
+await app.register(authRoutes);
+
+// Shows routes
+await app.register(showsRoutes);
+
+// Reservations routes
+await app.register(reservationsRoutes);
+
+// Metrics routes (ops lane)
+await app.register(metricsRoutes);
 
 // Health endpoints
 app.get('/health/live', async () => {
@@ -155,7 +200,7 @@ app.get('/health/ready', async (request, reply) => {
 });
 
 // DB test endpoint (for manual verification)
-app.get('/health/db-test', async (request, reply) => {
+app.get('/health/db-test', { preHandler: authHook }, async (request, reply) => {
   if (!dbInitialized) {
     reply.code(503).send({ status: 'not ready', reason: 'db not initialized' });
     return;
@@ -183,6 +228,11 @@ app.get('/health/db-test', async (request, reply) => {
   }
 });
 
+// Admin guard test endpoint (for testing)
+app.get('/admin/test', { preHandler: adminGuard }, async () => {
+  return { status: 'ok', message: 'Admin access granted' };
+});
+
 // Original hello world
 app.get('/health', async () => {
   return { status: 'ok', message: 'Hello World' };
@@ -203,12 +253,20 @@ async function main() {
     dbInitialized = true;
     logger.info('Database initialized successfully');
 
+    // Start periodic metrics logging to file
+    startMetricsLogging();
+    logger.info('Metrics logging started');
+
     // Graceful shutdown
     let isShuttingDown = false;
     const shutdown = async (signal: string) => {
       if (isShuttingDown) return;
       isShuttingDown = true;
       logger.info({ signal }, 'Shutting down...');
+      
+      // Stop metrics logging
+      stopMetricsLogging();
+      
       await closePools();
       await app.close();
       process.exit(0);
