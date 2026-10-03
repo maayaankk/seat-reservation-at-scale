@@ -121,49 +121,92 @@ jobs:
     name: Promote dev to main via PR
     runs-on: ubuntu-latest
     needs: [lint-typecheck, build, test, docker]
+
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+
     permissions:
-      contents: write
+      contents: read
       pull-requests: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Fetch branches
+        run: |
+          git fetch origin main dev
+
       - name: Check if dev is ahead of main
         id: check_ahead
+        shell: bash
         run: |
-          git fetch origin main:main
-          # Check if dev is ahead of main
-          if git merge-base --is-ancestor main dev; then
-            # Check if dev is strictly ahead (not equal)
-            if [ "$(git rev-parse dev)" != "$(git rev-parse main)" ]; then
-              echo "ahead=true" >> $GITHUB_OUTPUT
-            else
-              echo "ahead=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "ahead=false" >> $GITHUB_OUTPUT
+          MAIN_SHA=$(git rev-parse origin/main)
+          DEV_SHA=$(git rev-parse origin/dev)
+
+          echo "main: $MAIN_SHA"
+          echo "dev:  $DEV_SHA"
+
+          if [ "$MAIN_SHA" = "$DEV_SHA" ]; then
+            echo "ahead=false" >> "$GITHUB_OUTPUT"
+            echo "dev and main are identical"
+            exit 0
           fi
-      - name: Create Pull Request
+
+          if git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"; then
+            echo "ahead=true" >> "$GITHUB_OUTPUT"
+            echo "dev is ahead of main"
+          else
+            echo "ahead=false" >> "$GITHUB_OUTPUT"
+            echo "dev has diverged from main"
+          fi
+
+      - name: Check for existing PR
+        id: existing_pr
         if: steps.check_ahead.outputs.ahead == 'true'
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "chore: auto-merge dev to main [skip ci]"
-          committer: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
-          author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>
-          branch: dev
-          base: main
-          delete-branch: false
-          title: "chore: auto-merge dev to main"
-          body: |
-            Automated PR from dev to main after successful CI.
-            
-            This PR was created automatically after all CI checks passed on the dev branch.
-            Review and merge to deploy to production.
-            
-            [skip ci]
-          labels: |
-            auto-merge
-            dependencies
-          draft: false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=$(gh pr list \
+            --base main \
+            --head dev \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Create promotion PR
+        if: |
+          steps.check_ahead.outputs.ahead == 'true' &&
+          steps.existing_pr.outputs.number == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head dev \
+            --title "chore: promote dev to main" \
+            --body "$(cat <<'EOF'
+          ## Automated Promotion
+
+          This PR was created automatically after all CI checks passed on `dev`.
+
+          ### Validation
+
+          - Lint/typecheck passed
+          - Build passed
+          - Tests passed
+          - Docker build passed
+
+          Please review and merge this PR to promote `dev` to `main`.
+          EOF
+          )"
+
+      - name: PR already exists
+        if: |
+          steps.check_ahead.outputs.ahead == 'true' &&
+          steps.existing_pr.outputs.number != ''
+        run: |
+          echo "Promotion PR #${{ steps.existing_pr.outputs.number }} already exists."

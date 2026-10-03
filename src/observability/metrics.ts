@@ -1,6 +1,7 @@
 import { Registry, collectDefaultMetrics, Counter, Gauge, Histogram } from 'prom-client';
 import { getPool } from '../db/pools.js';
 import { writeFileSync, appendFileSync } from 'node:fs';
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 
 const register = new Registry();
 collectDefaultMetrics({ register, prefix: 'nodejs_' });
@@ -172,8 +173,8 @@ export async function getMetrics(): Promise<string> {
   return data;
 }
 
-export async function metricsRoutes(app: any): Promise<void> {
-  app.get('/metrics', async (_request: any, reply: any) => {
+export async function metricsRoutes(app: FastifyInstance): Promise<void> {
+  app.get('/metrics', async (_request: FastifyRequest, reply: FastifyReply) => {
     const metrics = await getMetrics();
     reply.header('Content-Type', register.contentType);
     return metrics;

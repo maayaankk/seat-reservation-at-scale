@@ -1,4 +1,3 @@
-import { PoolClient } from 'pg';
 import { getPool } from '../db/pools.js';
 
 export interface ShowMeta {

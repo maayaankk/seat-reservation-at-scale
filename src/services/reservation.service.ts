@@ -1,5 +1,4 @@
-import { PoolClient } from 'pg';
-import { withTransactionRetry, getPool } from '../db/retry.js';
+import { withTransactionRetry } from '../db/retry.js';
 import { loadShowMeta } from '../lib/showCache.js';
 import { generateUuid, isValidUuid } from '../lib/uuid.js';
 import { canonicalizeSeats, canonicalSeatsHash } from '../lib/hash.js';

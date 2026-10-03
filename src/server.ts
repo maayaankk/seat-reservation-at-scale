@@ -20,9 +20,7 @@ import {
   dbPoolIdle
 } from './observability/metrics.js';
 import { 
-  writeSemaphore, 
-  readSemaphore, 
-  opsSemaphore 
+  writeSemaphore 
 } from './lib/semaphore.js';
 import { getPool } from './db/pools.js';
 import { authHook, adminGuard } from './http/auth.js';
@@ -51,8 +49,8 @@ app.addHook('onRequest', async (request, reply) => {
 
 // Response logging + HTTP metrics
 app.addHook('onResponse', async (request, reply) => {
-  const ctx = { requestId: reply.getHeader('x-request-id') };
-  runWithRequestContext(ctx as any, () => {
+  const ctx = { requestId: reply.getHeader('x-request-id') as string, startTime: Date.now() };
+  runWithRequestContext(ctx, () => {
     const log = getLogger();
     log.info(
       { method: request.method, url: request.url, statusCode: reply.statusCode, durationMs: reply.elapsedTime },
@@ -86,8 +84,9 @@ app.addHook('onResponse', async (request, reply) => {
 
 // Error logging
 app.addHook('onError', async (request, reply, error) => {
-  const ctx = { requestId: reply.getHeader('x-request-id') };
-  runWithRequestContext(ctx as any, () => {
+  const requestId = (reply.getHeader('x-request-id') as string) || crypto.randomUUID();
+  const ctx = { requestId, startTime: Date.now() };
+  runWithRequestContext(ctx, () => {
     const log = getLogger();
     log.error({ err: error, method: request.method, url: request.url }, 'request error');
   });
@@ -119,15 +118,16 @@ app.setErrorHandler(async (error: unknown, request, reply) => {
 
   // Fastify validation errors
   if (error && typeof error === 'object' && 'validation' in error) {
+    const fastifyError = error as { validation: Array<{ message: string; params: unknown[] }> };
     reply.code(400).send(createErrorResponse(
-      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: (error as any).validation })
+      new AppError(400, ERROR_CODES.INVALID_BODY, 'Validation failed', { issues: fastifyError.validation })
     ));
     return;
   }
 
   // Zod validation errors
   if (error && typeof error === 'object' && 'name' in error && error.name === 'ZodError') {
-    const zodError = error as any;
+    const zodError = error as unknown as { errors: Array<{ message: string; path: (string | number)[] }> };
     reply.code(400).send(createErrorResponse(
       new AppError(400, ERROR_CODES.INVALID_BODY, 'Invalid request body', { issues: zodError.errors })
     ));

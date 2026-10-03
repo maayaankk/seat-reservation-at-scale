@@ -3,8 +3,8 @@ import { z } from 'zod';
 import { reserveSeats, cancelReservation, ReserveResult } from '../../services/reservation.service.js';
 import { authHook } from '../auth.js';
 import { AppError, ERROR_CODES } from '../errors.js';
-import { writeSemaphore, readSemaphore, opsSemaphore } from '../../lib/semaphore.js';
-import { reserveQueueDepth, reserveInflight, dbRetriesTotal } from '../../observability/metrics.js';
+import { writeSemaphore } from '../../lib/semaphore.js';
+import { reserveQueueDepth, reserveInflight } from '../../observability/metrics.js';
 
 const reserveBodySchema = z.object({
   seats: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,50}$/)).min(1).max(50),
@@ -19,18 +19,6 @@ const cancelParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
-function mapErrorToReason(code: string): string {
-  switch (code) {
-    case ERROR_CODES.SEAT_TAKEN: return 'seat_taken';
-    case ERROR_CODES.USER_LIMIT_EXCEEDED: return 'per_user_limit';
-    case ERROR_CODES.IDEMPOTENCY_CONFLICT: return 'idempotency_conflict';
-    case ERROR_CODES.SEAT_NOT_FOUND: return 'seat_not_found';
-    case ERROR_CODES.INVALID_BODY: return 'invalid_body';
-    case ERROR_CODES.IDEMPOTENCY_REPLAY: return 'idempotent_replay';
-    default: return 'invalid_body';
-  }
-}
-
 export async function reservationsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/shows/:id/reserve', { preHandler: authHook }, async (request, reply) => {
     const paramResult = reserveParamsSchema.safeParse(request.params);
@@ -39,7 +27,7 @@ export async function reservationsRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const headerKey = request.headers['idempotency-key'] as string | undefined;
-    const bodyKey = (request.body as any)?.idempotency_key as string | undefined;
+    const bodyKey = (request.body as Record<string, unknown>)?.idempotency_key as string | undefined;
 
     if (headerKey && bodyKey && headerKey !== bodyKey) {
       throw new AppError(400, ERROR_CODES.INVALID_BODY, 'Idempotency key mismatch between header and body');

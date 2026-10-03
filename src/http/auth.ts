@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 import { AppError, ERROR_CODES } from './errors.js';
 import { timingSafeEqual } from 'node:crypto';
-import { runWithRequestContext, getRequestContext, setRequestContext } from './context.js';
+import { setRequestContext, getRequestContext } from './context.js';
 
 export interface JwtPayload {
   sub: string;
@@ -48,7 +48,7 @@ export function extractUserId(payload: JwtPayload): string {
   return payload.sub ?? payload.user_id ?? '';
 }
 
-export async function authHook(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+export async function authHook(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
   const authHeader = request.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     throw new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Missing or invalid Authorization header');
@@ -68,10 +68,10 @@ export async function authHook(request: FastifyRequest, reply: FastifyReply): Pr
   // Use setRequestContext (enterWith) to persist for entire async call chain
   setRequestContext({ ...ctx, startTime: Date.now() });
   
-  (request as any).user = ctx;
+  (request as unknown as Record<string, unknown>).user = ctx;
 }
 
-export async function adminGuard(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+export async function adminGuard(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
   const adminToken = request.headers['x-admin-token'] as string;
   if (!adminToken) {
     throw new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Missing X-Admin-Token header');

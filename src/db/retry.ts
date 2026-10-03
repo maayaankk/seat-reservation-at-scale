@@ -34,7 +34,7 @@ const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 10;
 
 export function isRetryableError(err: unknown): err is Error & { code?: string } {
-  return err instanceof Error && typeof (err as any).code === 'string' && RETRYABLE_CODES.has((err as any).code);
+  return err instanceof Error && typeof (err as { code?: unknown }).code === 'string' && RETRYABLE_CODES.has((err as { code?: string }).code as string);
 }
 
 export function classifyRetryReason(err: Error & { code?: string }): RetryReason {
@@ -52,7 +52,7 @@ export function jitteredDelay(attempt: number): number {
 
 export function connectionIsBroken(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
-  const code = (err as any).code;
+  const code = (err as { code?: string }).code;
   return code === '08006' || code === '08001' || code === '08004' || code === '57P01' || code === '57P02' || code === '57P03';
 }
 

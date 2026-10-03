@@ -1,6 +1,5 @@
-import { PoolClient } from 'pg';
 import { withTransactionRetry, getPool } from '../db/retry.js';
-import { loadShowMeta, setShowMeta, invalidateShowMeta } from '../lib/showCache.js';
+import { loadShowMeta, setShowMeta } from '../lib/showCache.js';
 import { generateUuid, isValidUuid } from '../lib/uuid.js';
 import { AppError, ERROR_CODES } from '../http/errors.js';
 import { canonicalizeSeats } from '../lib/hash.js';
@@ -61,9 +60,10 @@ export async function createShow(input: CreateShowInput): Promise<ShowResponse> 
         `INSERT INTO seats (show_id, seat_label, status) VALUES ${seatValues}`,
         seatParams
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errTyped = err as Error & { code?: string; constraint?: string };
       // Handle unique constraint violation on show name
-      if (err.code === '23505' && err.constraint === 'shows_name_key') {
+      if (errTyped.code === '23505' && errTyped.constraint === 'shows_name_key') {
         throw new AppError(409, ERROR_CODES.SHOW_EXISTS, 'Show with this name already exists');
       }
       throw err;
