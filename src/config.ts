@@ -8,7 +8,7 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('24h'),
   ADMIN_TOKEN: z.string().min(16),
   DATABASE_URL: z.string().url(),
-  DATABASE_DIRECT_URL: z.string().url(),
+  DATABASE_DIRECT_URL: z.string().url().optional().default(''),
   ENABLE_DEV_AUTH: z.coerce.boolean().default(false),
 });
 
