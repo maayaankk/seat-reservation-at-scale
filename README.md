@@ -88,6 +88,52 @@ docker run -d --name seat-reservation \
   seat-reservation:latest
 ```
 
+### Option 3: Download Pre-built Docker Image from GitHub Actions (No Local Build Required)
+
+The GitHub Actions CI pipeline builds and publishes a Docker image as an artifact on every push to `dev` and `main` branches. You can download and run the pre-built image without building locally:
+
+```bash
+# 1. Go to the GitHub Actions page:
+# https://github.com/maayaankk/seat-reservation-at-scale/actions
+
+# 2. Click on the latest successful "CI" workflow run (from dev or main branch)
+
+# 3. Download the "seat-reservation-image" artifact (seat-reservation.tar.gz)
+
+# 4. Extract and load the image
+gunzip -c seat-reservation.tar.gz | docker load
+
+# 5. Verify the image is loaded
+docker images | grep seat-reservation
+
+# 6. Run the container (with your environment variables)
+docker run -d --name seat-reservation \
+  -p 8080:8080 \
+  -e DATABASE_URL=postgres://user:pass@host:5432/dbname \
+  -e DATABASE_DIRECT_URL=postgres://user:pass@host:5432/dbname \
+  -e JWT_SECRET=your-32-char-secret \
+  -e ADMIN_TOKEN=your-admin-token \
+  -e ENABLE_DEV_AUTH=true \
+  -e NODE_ENV=production \
+  -e PORT=8080 \
+  seat-reservation:ci
+```
+
+**Alternative: One-liner download and run**
+```bash
+# Download and run in one go (requires gh CLI authenticated)
+gh run download -R maayaankk/seat-reservation-at-scale -n seat-reservation-image
+gunzip -c seat-reservation.tar.gz | docker load
+docker run -d -p 8080:8080 \
+  -e DATABASE_URL=postgres://user:pass@host:5432/dbname \
+  -e DATABASE_DIRECT_URL=postgres://user:pass@host:5432/dbname \
+  -e JWT_SECRET=your-32-char-secret \
+  -e ADMIN_TOKEN=your-admin-token \
+  -e ENABLE_DEV_AUTH=true \
+  -e NODE_ENV=production \
+  seat-reservation:ci
+```
+
 ---
 
 ## 💻 Running Locally Without Docker
