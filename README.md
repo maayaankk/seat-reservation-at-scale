@@ -138,10 +138,6 @@ docker run -d -p 8080:8080 \
 
 ## 💻 Running Locally Without Docker
 
----
-
-## 💻 Running Locally Without Docker
-
 ### Prerequisites
 - PostgreSQL 16 running locally
 - Node.js 22+
