@@ -59,15 +59,15 @@ export async function authHook(request: FastifyRequest, _reply: FastifyReply): P
   if (!userId) {
     throw new AppError(401, ERROR_CODES.UNAUTHORIZED, 'Token missing user identity');
   }
-  
+
   const requestId = (request.headers['x-request-id'] as string) || crypto.randomUUID();
   const ctx: AuthContext = { userId, requestId };
   setAuthContext(requestId, ctx);
-  
+
   // Also set in AsyncLocalStorage for service layer access
   // Use setRequestContext (enterWith) to persist for entire async call chain
   setRequestContext({ ...ctx, startTime: Date.now() });
-  
+
   (request as unknown as Record<string, unknown>).user = ctx;
 }
 
@@ -103,8 +103,8 @@ export function createDevToken(userId: string): string {
       default: return 86400;
     }
   };
-  return jwt.sign({ sub: userId }, config.JWT_SECRET, { 
-    expiresIn: parseDuration(expiresIn), 
-    algorithm: 'HS256' 
+  return jwt.sign({ sub: userId }, config.JWT_SECRET, {
+    expiresIn: parseDuration(expiresIn),
+    algorithm: 'HS256'
   });
 }

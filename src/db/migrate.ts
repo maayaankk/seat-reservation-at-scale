@@ -53,9 +53,10 @@ CREATE INDEX IF NOT EXISTS idx_seats_res ON seats(reservation_id) WHERE reservat
 `;
 
 export async function runMigrations(): Promise<void> {
-  const directUrl = config.DATABASE_DIRECT_URL;
+  // Use DATABASE_DIRECT_URL if available, otherwise fall back to DATABASE_URL
+  const directUrl = config.DATABASE_DIRECT_URL || config.DATABASE_URL;
   if (!directUrl) {
-    throw new Error('DATABASE_DIRECT_URL not set');
+    throw new Error('DATABASE_DIRECT_URL or DATABASE_URL not set');
   }
 
   const pool = new Pool({
@@ -103,9 +104,9 @@ export async function runMigrations(): Promise<void> {
 }
 
 export async function waitForDb(maxAttempts = 30, delayMs = 2000): Promise<void> {
-  const directUrl = config.DATABASE_DIRECT_URL;
+  const directUrl = config.DATABASE_DIRECT_URL || config.DATABASE_URL;
   if (!directUrl) {
-    throw new Error('DATABASE_DIRECT_URL not set');
+    throw new Error('DATABASE_DIRECT_URL or DATABASE_URL not set');
   }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

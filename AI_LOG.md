@@ -164,7 +164,18 @@ This document records AI assistance during the development of the seat reservati
 - Documentation (commit messages)
 - Testing and verification (Run test cases, postman collections)  
 - Structure the requirements into tasks for implementation
-- Generate test cases, Dockerfile, CI/CD workflow, Docker and Docker Compose files, 
+- Generate test cases, Dockerfile, CI/CD workflow, Docker and Docker Compose files
+- Fast code generation with test coverage
+- Ressolve git issues 
+- Generating code for multiple files quickly in the task plan
+- Fixing the code when bug was pointed out
+- Generating test cases for various scenarios, including edge cases, performance, scalability, and stress testing
+- Analysing the trade offs of given direction and suggesting best  approach
+- Providing multiple approaches for a problem and discussing them
+- Fixing bugs in AI generated code 
+- Implementing complex concepts like idempotency and advisory locks, providing correct and optimized code patterns
+- Implementing database schema design with proper constraints and indexing
+- Implementing business logic for seat reservation system
 
 **What I had to fix/redo**:
 - JWT signing API (createHmac vs createSign)
