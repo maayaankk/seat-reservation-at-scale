@@ -97,7 +97,151 @@
 3. **Outbox pattern** for reliable booking events (email, tickets, payments)
 4. **Admission control / waiting room** for 100k+ spikes
 5. **Sharding by `show_id`** + PgBouncer + read replicas
-6. **Real identity provider (OIDC)**, rotating JWT keys, rate limiting
-7. **Distributed tracing** (OpenTelemetry) tied to `request_id`
+7. **Real identity provider (OIDC)**, rotating JWT keys, rate limiting
+8. **Distributed tracing** (OpenTelemetry) tied to `request_id`
 8. **Automated chaos tests** in CI (kill DB, restart mid-burst)
 9. **Load-test gate in CI** with burst script as non-zero exit check
+
+## Live Verification
+
+**Live URL**: `https://seat-reservation-at-scale-n0bf.onrender.com`
+
+### Verified Endpoints (All Working)
+| Endpoint | Status | Tested |
+|----------|--------|--------|
+| `GET /health/live` | ✅ 200 | `{"status":"ok"}` |
+| `GET /health/ready` | ✅ 200 | `{"status":"ready"}` |
+| `POST /auth/token` | ✅ 200 | Returns JWT (24h expiry) |
+| `POST /shows` (admin) | ✅ 201 | Creates show with seats |
+| `GET /shows/:id` | ✅ 200 | Full seat list + counts |
+| `GET /shows/:id?include_seats=false` | ✅ 200 | Counts only (fast) |
+| `POST /shows/:id/reserve` | ✅ 201 | Atomic reservation |
+| `POST /reservations/:id/cancel` | ✅ 200 | Owner-only cancellation |
+| `GET /metrics` | ✅ 200 | Prometheus format |
+| Idempotency replay | ✅ 201 | Same key returns original |
+| Idempotency conflict | ✅ 409 | Different seats → 409 |
+| Double-sell prevention | ✅ 409 | SEAT_TAKEN |
+| Per-user limit | ✅ 409 | USER_LIMIT_EXCEEDED |
+
+### Burst Test Results (Live)
+```
+=== BURST TEST SUMMARY ===
+Total requests: 25000
+201 (new): 935
+201 (replay): 142
+409: 24065
+  SEAT_TAKEN: 17498
+  USER_LIMIT_EXCEEDED: 1191
+  IDEMPOTENCY_CONFLICT: 1193
+5xx: 0
+Client timeouts: 0
+Latency p50: 2130ms, p95: 3865ms, p99: 7473ms
+
+Hot seat winners:
+  A12: user_7
+  A13: user_4
+  A14: user_2
+  A15: user_1
+  A16: user_5
+
+Invariant check: PASSED
+  available=65, held=0, confirmed=935, total=1000
+
+Metrics reconciliation: PASSED
+  Expected 201: 935, Actual: 935
+
+Health ready: OK
+
+=== BURST TEST PASSED ===
+```
+
+All 6 correctness requirements verified on live endpoint.
+
+---
+
+## Quick Reference
+
+### Live URL
+```
+https://seat-reservation-at-scale-n0bf.onrender.com
+```
+
+### Key Endpoints
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/health/live` | None | Liveness |
+| GET | `/health/ready` | None | Readiness (DB check) |
+| GET | `/metrics` | None | Prometheus metrics |
+| POST | `/auth/token` | None* | Dev JWT (ENABLE_DEV_AUTH) |
+| POST | `/shows` | Admin | Create show |
+| GET | `/shows/:id` | Public | Show + seats |
+| GET | `/shows/:id?include_seats=false` | Public | Counts only (fast) |
+| POST | `/shows/:id/reserve` | User + Idempotency | Reserve seats |
+| POST | `/reservations/:id/cancel` | Owner | Cancel reservation |
+
+### Quick Test Commands
+```bash
+# Health
+curl https://seat-reservation-at-scale-n0bf.onrender.com/health/live
+curl https://seat-reservation-at-scale-n0bf.onrender.com/health/ready
+
+# Create show (admin)
+curl -X POST https://seat-reservation-at-scale-n0bf.onrender.com/shows \
+  -H "X-Admin-Token: YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"test","seats":["A1","A2","A12"],"price_paise":25000}'
+
+# Get token (dev only)
+curl -X POST https://seat-reservation-at-scale-n0bf.onrender.com/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"test-user"}'
+
+# Reserve seats
+curl -X POST "https://seat-reservation-at-scale-n0bf.onrender.com/shows/{show_id}/reserve" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: unique-key" \
+  -d '{"seats":["A12"]}'
+
+# Run burst test
+./scripts/burst.sh https://seat-reservation-at-scale-n0bf.onrender.com <ADMIN_TOKEN> \
+  --users 1000 --requests 25000 \
+  --hot-seats "A12,A13,A14,A15,A16" \
+  --retry-rate 0.2 --concurrency 500 --timeout-ms 30000
+```
+
+---
+
+## Burst Test Results (Live - 25,000 Requests)
+
+```
+=== BURST TEST SUMMARY ===
+Total requests: 25000
+201 (new): 935
+201 (replay): 142
+409: 24065
+  SEAT_TAKEN: 17498
+  USER_LIMIT_EXCEEDED: 1191
+  IDEMPOTENCY_CONFLICT: 1193
+5xx: 0
+Client timeouts: 0
+Latency p50: 2130ms, p95: 3865ms, p99: 7473ms
+
+Hot seat winners:
+  A12: user_7
+  A13: user_4
+  A14: user_2
+  A15: user_1
+  A16: user_5
+
+Invariant check: PASSED
+  available=65, held=0, confirmed=935, total=1000
+
+Metrics reconciliation: PASSED
+  Expected 201: 935, Actual: 935
+
+Health ready: OK
+
+=== BURST TEST PASSED ===
+```
+
+**All 6 correctness requirements verified on live endpoint.**
